@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>가드이어 대시보드 v4 (카메라 제거)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', 'Pretendard', sans-serif; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .tab-btn {
+            padding: 0.75rem 1.25rem;
+            border-radius: 0.5rem;
+            border-bottom-left-radius: 0;
+            border-bottom-right-radius: 0;
+            cursor: pointer;
+            font-weight: 600;
+            color: #6b7280; /* text-gray-500 */
+            border: 1px solid transparent;
+            border-bottom: 1px solid #e5e7eb; /* border-gray-200 */
+        }
+        .tab-btn.active {
+            color: #1d4ed8; /* text-blue-700 */
+            border-color: #e5e7eb; /* border-gray-200 */
+            border-bottom-color: transparent;
+            background-color: white;
+        }
+        @keyframes pulse-red {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(220, 38, 38, 0); }
+        }
+        .alert-pulse {
+            animation: pulse-red 2s infinite;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 p-4 md:p-8">
+
+    <div class="max-w-4xl mx-auto bg-white rounded-xl shadow-lg overflow-hidden">
+        <!-- 상단 헤더 -->
+        <header class="p-6 bg-gray-900 text-white">
+            <h1 class="text-3xl font-bold">가드이어 로컬 대시보드</h1>
+            <p class="text-gray-300 mt-1">화재 경보 모니터링 시스템 v4</p>
+        </header>
+
+        <!-- 긴급 알림 배너 (평소엔 숨겨짐) -->
+        <div id="alert-banner" class="hidden items-center justify-center p-4 bg-red-600 text-white font-bold text-lg alert-pulse">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 mr-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            긴급: 화재 경보 감지!
+        </div>
+
+        <!-- 탭 네비게이션 -->
+        <nav class="flex border-b border-gray-200 px-4 pt-4 bg-gray-50">
+            <button class="tab-btn active" onclick="showTab('dashboard')">대시보드</button>
+            <button class="tab-btn" onclick="showTab('events')">이벤트 내역</button>
+            <button class="tab-btn" onclick="showTab('settings')">설정</button>
+            <button class="tab-btn" onclick="showTab('logs')">발송 내역</button>
+        </nav>
+
+        <!-- 탭 컨텐츠 -->
+        <div class="p-6 md:p-8">
+            <!-- 1. 대시보드 탭 -->
+            <div id="dashboard" class="tab-content active">
+                <section>
+                    <h2 class="text-2xl font-semibold mb-4 text-gray-800">장치 상태</h2>
+                    <div id="device-status-card" class="p-6 rounded-lg border-2">
+                        <!-- 이 내용은 updateDashboardUI()에 의해 동적으로 채워집니다 -->
+                    </div>
+                </section>
+                
+                <section class="mt-8">
+                    <h2 class="text-2xl font-semibold mb-4 text-gray-800">시스템 정보</h2>
+                    <div class="bg-gray-50 p-6 rounded-lg border">
+                        <p class="text-gray-600">이곳에 시스템의 기본 정보 (IP, Uptime 등)를 표시할 수 있습니다.</p>
+                    </div>
+                </section>
+            </div>
+
+            <!-- 2. 이벤트 내역 탭 -->
+            <div id="events" class="tab-content">
+                <h2 class="text-2xl font-semibold mb-4 text-gray-800">화재 감지 이벤트 내역</h2>
+                <div class="max-h-96 overflow-y-auto border rounded-lg">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">이벤트 ID</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">감지 시간</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">상태</th>
+                            </tr>
+                        </thead>
+                        <tbody id="events-table-body" class="bg-white divide-y divide-gray-200">
+                            <!-- JS로 채워짐 -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 3. 설정 탭 -->
+            <div id="settings" class="tab-content">
+                <!-- 연락처 관리 -->
+                <section>
+                    <h2 class="text-2xl font-semibold mb-4 text-gray-800">알림 연락처 관리</h2>
+                    <form id="contact-form" class="space-y-4 mb-6">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <input type="text" id="contact-name" placeholder="설명 (예: 관리자A)" class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" required>
+                            <input type="text" id="contact-phone" placeholder="휴대폰 번호 (예: 01012345678)" class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            <input type="email" id="contact-email" placeholder="이메일 (예: user@example.com)" class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        </div>
+                        <button type="submit" class="px-6 py-2 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50">
+                            연락처 추가
+                        </button>
+                    </form>
+                    <div id="contact-list" class="space-y-2">
+                        <!-- JS로 채워짐 -->
+                    </div>
+                </section>
+
+                <!-- 시스템 설정 (v4: 카메라 제거) -->
+                <section class="mt-8 border-t pt-8">
+                    <h2 class="text-2xl font-semibold mb-4 text-gray-800">시스템 설정</h2>
+                    <form id="system-settings-form" class="space-y-4">
+                        <div>
+                            <label for="system-location" class="block text-sm font-medium text-gray-700">설치 위치</label>
+                            <input type="text" id="system-location" placeholder="예: 거실, 경비실" class="mt-1 w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        </div>
+                        <button type="submit" class="px-6 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-50">
+                            시스템 설정 저장
+                        </button>
+                    </form>
+                    <p id="settings-save-status" class="mt-2 text-sm text-green-600"></p>
+                </section>
+
+                <!-- 관리자 설정 (발신자 정보) -->
+                <section class="mt-8 border-t pt-8">
+                    <div class="bg-gray-50 p-6 rounded-lg border border-gray-200">
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-2xl font-semibold text-gray-800">관리자 설정 (발신자 정보)</h2>
+                            <button id="btn-admin-login" class="px-4 py-2 bg-gray-800 text-white font-semibold rounded-lg hover:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-gray-500">
+                                관리자 로그인
+                            </button>
+                        </div>
+
+                        <div id="admin-panel" class="hidden space-y-6">
+                            <form id="admin-settings-form" class="space-y-4">
+                                <div class="bg-white p-4 rounded-lg shadow-sm border">
+                                    <h3 class="font-bold mb-3 text-lg text-gray-800">관리자 비밀번호 변경</h3>
+                                    <input type="password" id="new-admin-pw" placeholder="새 비밀번호 (변경시에만 입력)" class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                </div>
+
+                                <div class="bg-white p-4 rounded-lg shadow-sm border">
+                                    <h3 class="font-bold mb-3 text-lg text-gray-800">이메일 발송 설정 (Gmail)</h3>
+                                    <input type="email" id="gmail-user" placeholder="Gmail 주소" class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 mb-2">
+                                    <input type="password" id="gmail-pw" placeholder="앱 비밀번호 (16자리)" class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                </div>
+
+                                <div class="bg-white p-4 rounded-lg shadow-sm border">
+                                    <h3 class="font-bold mb-3 text-lg text-gray-800">문자 발송 설정 (NHN Cloud)</h3>
+                                    <input type="text" id="nhn-app-key" placeholder="App Key" class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 mb-2">
+                                    <input type="password" id="nhn-secret-key" placeholder="Secret Key" class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 mb-2">
+                                    <input type="text" id="nhn-sender" placeholder="발신번호 (등록된 번호)" class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                </div>
+
+                                <div class="text-right">
+                                    <button type="submit" class="px-6 py-3 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                        발신자 정보 저장
+                                    </button>
+                                </div>
+                                <p id="admin-save-status" class="mt-2 text-sm text-green-600"></p>
+                            </form>
+                        </div>
+                    </div>
+                </section>
+            </div>
+
+            <!-- 4. 발송 내역 탭 -->
+            <div id="logs" class="tab-content">
+                <h2 class="text-2xl font-semibold mb-4 text-gray-800">알림 발송 내역</h2>
+                <div class="max-h-96 overflow-y-auto border rounded-lg">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">시간</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">유형</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">수신자</th>
+		                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">내용</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">상태</th>
+                            </tr>
+                        </thead>
+                        <tbody id="logs-table-body" class="bg-white divide-y divide-gray-200">
+                            <!-- JS로 채워짐 -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- API 통신 스크립트 -->
+    <script>
+        // --- 전역 상태 변수 ---
+        let currentStatus = { status: 'normal' };
+        let pollingInterval; 
+
+        // --- API 헬퍼 함수 ---
+        async function apiFetch(url, options = {}) {
+            try {
+                const response = await fetch(url, options);
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+                }
+                const contentType = response.headers.get("content-type");
+                if (contentType && contentType.indexOf("application/json") !== -1) {
+                    return response.json();
+                } else {
+                    return { success: true }; 
+                }
+            } catch (error) {
+                console.error('API Error:', error);
+                return null; 
+            }
+        }
+
+        // --- API 함수 ---
+        function fetchStatus() { return apiFetch('/api/status'); }
+        function fetchEvents() { return apiFetch('/api/events'); }
+        function fetchContacts() { return apiFetch('/api/notification-contacts'); }
+        function saveContact(contact) {
+            return apiFetch('/api/notification-contacts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(contact)
+            });
+        }
+        function deleteContact(id) {
+            return apiFetch(`/api/notification-contacts/${id}`, { method: 'DELETE' });
+        }
+        function toggleContactActive(id, isActive) {
+            return apiFetch(`/api/notification-contacts/${id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ is_active: isActive })
+            });
+        }
+        function fetchSystemSettings() {
+            return apiFetch('/api/system-settings');
+        }
+        // (v4: camera_url 제거)
+        function saveSystemSettings(location) {
+            return apiFetch('/api/system-settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ location: location })
+            });
+        }
+        function fetchLogs() { return apiFetch('/api/logs'); }
+        function acknowledgeAlert() { return apiFetch('/api/acknowledge', { method: 'POST' }); }
+
+
+        // --- UI 렌더링 함수 ---
+
+        function showTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.remove('active');
+            });
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            document.getElementById(tabName).classList.add('active');
+            document.querySelector(`.tab-btn[onclick="showTab('${tabName}')"]`).classList.add('active');
+
+            if (tabName === 'dashboard') {
+                updateDashboardUI(currentStatus);
+            } else if (tabName === 'events') {
+                loadEventsData();
+            } else if (tabName === 'settings') {
+                loadSettingsData();
+            } else if (tabName === 'logs') {
+                loadLogsData();
+            }
+        }
+
+        function updateUIOnPoll(newStatus) {
+            if (!newStatus) return; 
+            if (newStatus.status !== currentStatus.status) {
+                console.log('상태 변경 감지 (폴링):', newStatus.status);
+                currentStatus = newStatus; 
+                updateDashboardUI(currentStatus);
+                
+                const activeTab = document.querySelector('.tab-btn.active').getAttribute('onclick').match(/'(.*?)'/)[1];
+                if (activeTab === 'events') {
+                    loadEventsData();
+                } else if (activeTab === 'logs') {
+                    loadLogsData();
+                }
+            }
+        }
+
+        // (v4: 카메라 버튼 제거)
+        function updateDashboardUI(statusData) {
+            const banner = document.getElementById('alert-banner');
+            const card = document.getElementById('device-status-card');
+            
+            if (!statusData || !card) return; 
+
+            currentStatus = statusData;
+
+            if (statusData.status === 'alert') {
+                banner.style.display = 'flex';
+                card.className = 'p-6 rounded-lg border-2 border-red-600 bg-red-50';
+                card.innerHTML = `
+                    <div class="flex justify-between items-center">
+                        <div>
+                            <h3 class="text-2xl font-bold text-red-600">화재 감지됨</h3>
+                            <p class="text-red-700 mt-1">경보가 감지되었습니다. 즉시 확인하세요.</p>
+                        </div>
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                    </div>
+                    <div class="mt-4 flex gap-4">
+                        <button onclick="handleAcknowledge()" class="px-5 py-2 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700">
+                            경보 확인 (해제)
+                        </button>
+                    </div>
+                `;
+            } else {
+                banner.style.display = 'none';
+                card.className = 'p-6 rounded-lg border-2 border-green-600 bg-green-50';
+                card.innerHTML = `
+                    <div class="flex justify-between items-center">
+                        <div>
+                            <h3 class="text-2xl font-bold text-green-600">정상</h3>
+                            <p class="text-green-700 mt-1">화재 경보가 감지되지 않았습니다.</p>
+                        </div>
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                    </div>
+                `;
+            }
+        }
+
+        async function loadEventsData() {
+            const events = await fetchEvents();
+            const tbody = document.getElementById('events-table-body');
+            if (!events || !tbody) return;
+
+            tbody.innerHTML = ''; 
+            if (events.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="3" class="px-6 py-4 text-center text-gray-500">감지된 이벤트가 없습니다.</td></tr>';
+                return;
+            }
+            events.forEach(event => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${event.id}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${new Date(event.timestamp).toLocaleString()}</td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <span class="px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800">
+                            ${event.event_type === 'fire_alarm_detected' ? '화재 감지' : event.event_type}
+                        </span>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        // (v4: camera_url 제거)
+        async function loadSettingsData() {
+            // 1. 연락처 목록 로드
+            const contacts = await fetchContacts();
+            const listDiv = document.getElementById('contact-list');
+            if (!contacts || !listDiv) return;
+
+            listDiv.innerHTML = ''; 
+            contacts.forEach(contact => {
+                const div = document.createElement('div');
+                div.className = 'flex items-center justify-between p-3 bg-gray-50 rounded-lg border';
+                div.innerHTML = `
+                    <div>
+                        <span class="font-semibold">${contact.name}</span>
+                        <span class="text-sm text-gray-600 ml-2">${contact.phone || ''}</span>
+                        <span class="text-sm text-gray-600 ml-2">${contact.email || ''}</span>
+                    </div>
+                    <div class="flex items-center gap-4">
+                        <label class="inline-flex items-center cursor-pointer">
+                            <input type="checkbox" class="sr-only peer" ${contact.is_active ? 'checked' : ''} onchange="handleToggleActive(${contact.id}, this.checked)">
+                            <div class="relative w-11 h-6 bg-gray-200 rounded-full peer peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600"></div>
+                            <span class="ms-3 text-sm font-medium text-gray-900">${contact.is_active ? '활성' : '비활성'}</span>
+                        </label>
+                        <button onclick="handleDeleteContact(${contact.id})" class="text-red-500 hover:text-red-700 font-semibold">삭제</button>
+                    </div>
+                `;
+                listDiv.appendChild(div);
+            });
+
+            // 2. 시스템 설정 로드
+            const settings = await fetchSystemSettings();
+            if (settings) {
+                document.getElementById('system-location').value = settings.location || '';
+            }
+        }
+
+        async function loadLogsData() {
+            const logs = await fetchLogs();
+            const tbody = document.getElementById('logs-table-body');
+            if (!logs || !tbody) return;
+
+            tbody.innerHTML = ''; 
+            if (logs.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="px-6 py-4 text-center text-gray-500">발송된 알림이 없습니다.</td></tr>';
+                return;
+            }
+            logs.forEach(log => {
+const tr = document.createElement('tr');
+                // [UI 수정] 상태에 따른 배지 색상 및 텍스트 처리
+                let statusHtml = '';
+                if (log.status === 'success') statusHtml = '<span class="px-2 py-1 rounded-full bg-green-100 text-green-800 text-xs font-semibold">성공</span>';
+                else if (log.status === 'failed') statusHtml = '<span class="px-2 py-1 rounded-full bg-red-100 text-red-800 text-xs font-semibold">실패</span>';
+                else if (log.status === 'pending') statusHtml = '<span class="px-2 py-1 rounded-full bg-yellow-100 text-yellow-800 text-xs font-semibold animate-pulse">전송 중...</span>';
+                
+                tr.innerHTML = `
+                    <td class="px-6 py-4 text-sm text-gray-500">${new Date(log.timestamp).toLocaleString()}</td>
+                    <td class="px-6 py-4 text-sm text-gray-500">${log.type.toUpperCase()}</td>
+                    <td class="px-6 py-4 text-sm text-gray-900">${log.recipient_name}</td>
+                    <td class="px-6 py-4 text-sm text-gray-600">${log.message}</td>
+                    <td class="px-6 py-4 whitespace-nowrap">${statusHtml}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        // --- 이벤트 핸들러 ---
+        async function handleAcknowledge() {
+            const result = await acknowledgeAlert(); 
+            if (result) {
+                const newStatus = await fetchStatus();
+                if (newStatus) {
+                    updateDashboardUI(newStatus);
+                }
+            }
+        }
+
+        // (v4: 카메라 버튼 핸들러 제거됨)
+
+        document.getElementById('contact-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const contact = {
+                name: document.getElementById('contact-name').value,
+                phone: document.getElementById('contact-phone').value || null,
+                email: document.getElementById('contact-email').value || null,
+                is_active: true
+            };
+            if (!contact.phone && !contact.email) {
+                alert('휴대폰 번호와 이메일 중 하나는 반드시 입력해야 합니다.');
+                return;
+            }
+            const result = await saveContact(contact);
+            if (result) {
+                loadSettingsData(); 
+                document.getElementById('contact-form').reset(); 
+            }
+        });
+
+        async function handleDeleteContact(id) {
+            if (!confirm('이 연락처를 정말 삭제하시겠습니까?')) return;
+            const result = await deleteContact(id);
+            if (result) {
+                loadSettingsData(); 
+            }
+        }
+
+        async function handleToggleActive(id, isActive) {
+            const result = await toggleContactActive(id, isActive);
+            if (result) {
+                loadSettingsData(); 
+            }
+        }
+
+        // (v4: camera_url 제거)
+        document.getElementById('system-settings-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const location = document.getElementById('system-location').value;
+            
+            const result = await saveSystemSettings(location); // cameraUrl 인자 제거
+            if (result) {
+                const statusEl = document.getElementById('settings-save-status');
+                statusEl.textContent = '설정이 성공적으로 저장되었습니다.';
+                setTimeout(() => { statusEl.textContent = ''; }, 3000);
+            }
+        });
+
+        // --- 관리자 설정 ---
+        document.getElementById('btn-admin-login').addEventListener('click', async () => {
+            const pw = prompt("관리자 비밀번호를 입력하세요 (초기값: 1234)");
+            if (!pw) return;
+
+            const res = await apiFetch('/api/admin/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password: pw })
+            });
+
+            if (res && res.success) {
+                alert("로그인 성공!");
+                document.getElementById('btn-admin-login').style.display = 'none';
+                document.getElementById('admin-panel').classList.remove('hidden');
+
+                const settings = await apiFetch('/api/admin/settings');
+                if (settings) {
+                    document.getElementById('gmail-user').value = settings.gmail_user || '';
+                    document.getElementById('gmail-pw').value = settings.gmail_password || '';
+                    document.getElementById('nhn-app-key').value = settings.nhn_app_key || '';
+                    document.getElementById('nhn-secret-key').value = settings.nhn_secret_key || '';
+                    document.getElementById('nhn-sender').value = settings.nhn_sender_number || '';
+                }
+            } else {
+                alert("비밀번호가 일치하지 않습니다.");
+            }
+        });
+
+        document.getElementById('admin-settings-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const data = {
+                new_password: document.getElementById('new-admin-pw').value,
+                gmail_user: document.getElementById('gmail-user').value,
+                gmail_password: document.getElementById('gmail-pw').value,
+                nhn_app_key: document.getElementById('nhn-app-key').value,
+                nhn_secret_key: document.getElementById('nhn-secret-key').value,
+                nhn_sender_number: document.getElementById('nhn-sender').value
+            };
+            const result = await apiFetch('/api/admin/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            if (result) {
+                const statusEl = document.getElementById('admin-save-status');
+                statusEl.textContent = '발신자 정보가 저장되었습니다.';
+                document.getElementById('new-admin-pw').value = '';
+                setTimeout(() => { statusEl.textContent = ''; }, 3000);
+            }
+        });
+
+        // --- 초기화 로직 ---
+        function startStatusPolling() {
+            pollStatus(); 
+            pollingInterval = setInterval(pollStatus, 3000);
+        }
+
+        async function pollStatus() {
+            const newStatus = await fetchStatus();
+            if (newStatus) {
+                updateUIOnPoll(newStatus);
+            }
+        }
+
+        async function loadInitialData() {
+            const initialStatus = await fetchStatus();
+            if (initialStatus) {
+                currentStatus = initialStatus;
+            }
+            showTab('dashboard'); 
+            startStatusPolling();
+        }
+
+        document.addEventListener('DOMContentLoaded', loadInitialData);
+
+    </script>
+</body>
+</html>

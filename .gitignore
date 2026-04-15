@@ -1,0 +1,39 @@
+# --- 민감 데이터 (절대 커밋 금지) ---
+gard-ear.db
+*.db
+.env
+
+# --- 녹음/로그 (프라이버시 + 용량) ---
+records/
+logs/
+*.wav
+*.csv
+
+# --- 대형 모델 파일 (GitHub Release로 배포) ---
+*.pt
+*.pkl
+*.keras
+yamnet_local/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# --- 가상환경 ---
+myenv/
+venv/
+env/
+.venv/
+
+# --- 에디터/OS ---
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --- 결과물 ---
+result/
