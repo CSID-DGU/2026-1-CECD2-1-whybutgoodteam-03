@@ -23,31 +23,78 @@ webserverfile/
 ├── index.html              # 관리자 대시보드 UI
 ├── test_email.py           # Gmail 발송 테스트
 ├── test_alert.py           # /api/events 트리거 테스트
-├── esresnext/              # ESResNeXtFBSP 모델 정의
+├── check_error.py          # 라이브러리 설치 점검 스크립트
+├── esresnext/              # ESResNeXtFBSP 모델 정의 (파이썬 모듈)
 ├── .env.example            # 환경 변수 템플릿
-└── requirements.txt
+├── .gitignore
+├── requirements.txt
+└── README.md
 ```
 
-## 📥 모델 파일 다운로드
+## 📥 모델 파일 다운로드 및 배치
 
 ⚠️ **모델 파일은 용량 문제로 저장소에 포함되어 있지 않습니다.**
-GitHub Releases에서 다운로드하여 **프로젝트 루트**에 배치하세요.
+GitHub Releases에서 받아 아래 구조로 배치해야 `main_detector.py` / `pipeline_mul.py`가 정상 동작합니다.
+
+### 1) Release에서 받을 4개 파일
+
+👉 [**Releases 페이지에서 다운로드**](../../releases/latest) (태그 `v1.0`)
 
 | 파일 | 용량 | 용도 |
 |---|---|---|
-| `best_3class_esresnext_tuned.pt` | 120 MB | 메인 분류기 (권장) |
-| `best_3class_rf.pkl` | 8 MB | RandomForest 백업 |
-| `yamnet_transfer_classifier.keras` | 13 MB | YAMNet Transfer |
-| `yamnet_mlp_best.pt` | 2.6 MB | YAMNet MLP |
+| `best_3class_esresnext_tuned.pt` | 120 MB | 메인 분류기 (기본값, `ACTIVE_MODEL="esresnext"`) |
+| `best_3class_rf.pkl` | 8 MB | RandomForest (`ACTIVE_MODEL="rf"`) |
+| `yamnet_transfer_classifier.keras` | 13 MB | YAMNet Transfer (`ACTIVE_MODEL="yamnet"`) |
+| `yamnet_mlp_best.pt` | 2.6 MB | YAMNet MLP (옵션) |
 
-👉 [**Releases 페이지에서 다운로드**](../../releases/latest)
+### 2) 배치 위치 — **프로젝트 루트에 그대로 복사**
 
-YAMNet hub 모델이 필요한 경우 (`yamnet` 모델 사용 시):
+`app.py`, `README.md`가 있는 폴더(= `webserverfile/`)에 **모두 같은 레벨로** 놓으세요.
+하위 폴더를 만들지 말고 그대로 떨어뜨리면 됩니다.
+
+### 3) 최종 디렉토리 구조 (모델 배치 후)
+
+```
+webserverfile/                              ← 여기가 "프로젝트 루트"
+├── app.py
+├── main_detector.py
+├── pipeline_mul.py
+├── ... (기타 .py, index.html 등)
+├── best_3class_esresnext_tuned.pt          ← ✅ 루트 직속
+├── best_3class_rf.pkl                      ← ✅ 루트 직속
+├── yamnet_transfer_classifier.keras        ← ✅ 루트 직속
+├── yamnet_mlp_best.pt                      ← ✅ 루트 직속
+├── yamnet_local/                           ← ✅ YAMNet 사용 시 (아래 4번 참고)
+│   ├── assets/
+│   ├── variables/
+│   └── saved_model.pb
+├── records/                                ← 실행 시 자동 생성 (녹음 저장)
+└── logs/                                   ← 실행 시 자동 생성 (CSV 로그)
+```
+
+### 4) YAMNet Hub 모델 (선택 — `yamnet` 모델을 쓸 때만)
+
 ```bash
+# 프로젝트 루트에서 실행
 mkdir -p yamnet_local
 wget -O yamnet_local/yamnet.tar.gz https://tfhub.dev/google/yamnet/1?tf-hub-format=compressed
 tar -xvf yamnet_local/yamnet.tar.gz -C yamnet_local
 ```
+
+### 5) 배치 확인
+
+루트에서 다음 명령어로 4개 파일이 보이면 OK:
+
+```bash
+# Linux / macOS
+ls -lh *.pt *.pkl *.keras
+
+# Windows (PowerShell)
+Get-ChildItem *.pt, *.pkl, *.keras
+```
+
+> 📌 `pipeline_mul.py`의 `ESRESNEXT_MODEL_PATH = "./best_3class_esresnext_tuned.pt"`처럼
+> 모든 모델 경로가 **상대경로(`./`) + 루트 기준**으로 하드코딩되어 있습니다. 반드시 루트에 두세요.
 
 ## 🚀 설치 및 실행
 
