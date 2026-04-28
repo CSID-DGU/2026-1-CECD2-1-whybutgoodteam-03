@@ -60,7 +60,7 @@ def create_tables():
     )
     ''')
 
-    # 5. 시스템 설정 테이블 (v6: 관리자 비밀번호 + 발신자 정보)
+    # 5. 시스템 설정 테이블 (v7: 관리자 비밀번호 + 발신자 정보 + Telegram)
     c.execute('''
     CREATE TABLE SystemSettings (
         id INTEGER PRIMARY KEY CHECK(id = 1),
@@ -70,7 +70,9 @@ def create_tables():
         gmail_password TEXT DEFAULT '',
         solapi_api_key TEXT DEFAULT '',
         solapi_api_secret TEXT DEFAULT '',
-        solapi_sender_number TEXT DEFAULT ''
+        solapi_sender_number TEXT DEFAULT '',
+        telegram_bot_token TEXT DEFAULT '',
+        telegram_chat_id TEXT DEFAULT ''
     )
     ''')
     c.execute("INSERT INTO SystemSettings (id) VALUES (1)")

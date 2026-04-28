@@ -1,6 +1,8 @@
 import sqlite3
 import os
 import atexit
+import socket
+import subprocess
 import threading
 import time
 import csv
@@ -9,6 +11,9 @@ from flask import Flask, jsonify, request, render_template, g, send_from_directo
 from flask_cors import CORS
 from notifications import send_notification_task, send_manual_sms_task
 from health import get_health
+import telegram_notify
+
+STATUS_REPORT_INTERVAL_SEC = 30 * 60  # 30분
 
 DETECTION_LOG = 'logs/detection_log.csv'
 RECORDINGS_DIR = os.path.abspath('records')
@@ -81,7 +86,8 @@ def admin_settings():
 
         # 발신자 정보 업데이트: 빈 문자열이면 기존 값 유지, 값이 있으면 덮어쓰기
         for field in ('gmail_user', 'gmail_password',
-                      'solapi_api_key', 'solapi_api_secret', 'solapi_sender_number'):
+                      'solapi_api_key', 'solapi_api_secret', 'solapi_sender_number',
+                      'telegram_bot_token', 'telegram_chat_id'):
             value = d.get(field)
             if value:
                 execute_db(f"UPDATE SystemSettings SET {field} = ? WHERE id = 1", [value])
@@ -98,12 +104,16 @@ def admin_settings():
             'solapi_api_key': '',
             'solapi_api_secret': '',
             'solapi_sender_number': '',
+            'telegram_bot_token': '',
+            'telegram_chat_id': '',
             'solapi_sender_number_preview': row.get('solapi_sender_number') or '',
             'gmail_user_set': bool(row.get('gmail_user')),
             'gmail_password_set': bool(row.get('gmail_password')),
             'solapi_api_key_set': bool(row.get('solapi_api_key')),
             'solapi_api_secret_set': bool(row.get('solapi_api_secret')),
             'solapi_sender_number_set': bool(row.get('solapi_sender_number')),
+            'telegram_bot_token_set': bool(row.get('telegram_bot_token')),
+            'telegram_chat_id_set': bool(row.get('telegram_chat_id')),
         }
         return jsonify(masked)
     return jsonify({})
@@ -345,8 +355,111 @@ def manage_contact_detail(id):
         execute_db("UPDATE NotificationContacts SET is_active = ? WHERE id = ?", [request.json.get('is_active'), id])
     return jsonify({'success': True})
 
+def _get_local_ip():
+    try:
+        sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sk.connect(('8.8.8.8', 80))
+        ip = sk.getsockname()[0]
+        sk.close()
+        return ip
+    except Exception:
+        return None
+
+
+def _get_tailscale_ip():
+    try:
+        out = subprocess.check_output(['tailscale', 'ip', '-4'], timeout=2).decode().strip()
+        return out.splitlines()[0] if out else None
+    except Exception:
+        return None
+
+
+def _read_last_detection():
+    try:
+        with open(DETECTION_LOG, 'rb') as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 4096))
+            tail = f.read().decode('utf-8', errors='replace').splitlines()
+        if not tail:
+            return None
+        last = next(csv.reader([tail[-1]]))
+        return {'timestamp': last[0], 'stage': last[2]} if len(last) >= 9 else None
+    except Exception:
+        return None
+
+
+def _count_today_events(db_path):
+    try:
+        conn = sqlite3.connect(db_path)
+        today = datetime.now().strftime('%Y-%m-%d')
+        cur = conn.execute("SELECT COUNT(*) FROM Events WHERE timestamp LIKE ?", [f'{today}%'])
+        n = cur.fetchone()[0]
+        conn.close()
+        return n
+    except sqlite3.Error:
+        return None
+
+
+def build_status_report():
+    h = get_health()
+    last_det = _read_last_detection()
+    today_events = _count_today_events(DATABASE)
+
+    try:
+        conn = sqlite3.connect(DATABASE)
+        conn.row_factory = sqlite3.Row
+        loc_row = conn.execute("SELECT location FROM SystemSettings WHERE id = 1").fetchone()
+        st_row = conn.execute("SELECT status FROM DeviceStatus WHERE device_id = ?", [DEVICE_ID]).fetchone()
+        conn.close()
+        location = loc_row['location'] if loc_row else '미설정'
+        device_status = st_row['status'] if st_row else 'normal'
+    except sqlite3.Error:
+        location, device_status = '미설정', 'unknown'
+
+    cpu_temp = h.get('cpu_temp_c')
+    cpu_temp_str = f"{cpu_temp:.1f}°C" if cpu_temp is not None else 'N/A'
+    mic = '✅' if h.get('mic_ok') else ('❌' if h.get('mic_ok') is False else '–')
+    ts_ip = _get_tailscale_ip() or '–'
+    local_ip = _get_local_ip() or '–'
+
+    last_det_str = (
+        f"{last_det['timestamp']} ({last_det['stage']})" if last_det else '없음'
+    )
+
+    lines = [
+        f"📊 <b>가드이어 상태 보고</b>",
+        f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"📍 위치: {location}",
+        f"🚦 장치: {'🚨 ALERT' if device_status == 'alert' else '🟢 정상'}",
+        f"🎤 마이크: {mic}",
+        f"🌡️ CPU: {cpu_temp_str}",
+        f"🌐 IP: {local_ip} / TS: {ts_ip}",
+        f"📝 마지막 감지: {last_det_str}",
+        f"🔥 오늘 이벤트: {today_events if today_events is not None else '–'}건",
+    ]
+    return '\n'.join(lines)
+
+
+def status_reporter_loop():
+    # 부팅 직후 30초 뒤 첫 보고 → 그 다음부터 30분 주기
+    time.sleep(30)
+    while True:
+        try:
+            tg = telegram_notify.load_telegram_settings()
+            if tg.get('telegram_bot_token') and tg.get('telegram_chat_id'):
+                ok, err = telegram_notify.send_message(build_status_report(), settings=tg)
+                if not ok:
+                    print(f"[Telegram 상태 보고] 실패: {err}")
+        except Exception as e:
+            print(f"[Telegram 상태 보고] 예외: {e}")
+        time.sleep(STATUS_REPORT_INTERVAL_SEC)
+
+
 if __name__ == '__main__':
     if not os.path.exists(DATABASE):
         import database
         database.create_tables()
+
+    threading.Thread(target=status_reporter_loop, daemon=True).start()
+
     app.run(host='0.0.0.0', port=5000)

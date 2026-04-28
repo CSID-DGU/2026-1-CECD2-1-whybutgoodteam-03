@@ -2,12 +2,16 @@ import smtplib
 import requests
 import sqlite3
 import time
+import os
+import tempfile
 import hmac
 import hashlib
 import secrets
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+
+import telegram_notify
 
 SOLAPI_ENDPOINT = "https://api.solapi.com/messages/v4/send"
 
@@ -195,7 +199,34 @@ def send_notification_task(location):
             log_id = log_notification_start(name, 'email', message)
             send_email(name, email, message, log_id, settings=sender_settings)
 
+    # 3. Telegram 발송 (메시지 + 최근 1분 녹음)
+    send_telegram_fire_alert(message)
+
     print("[알림 작업 완료]")
+
+
+def send_telegram_fire_alert(message):
+    tg = telegram_notify.load_telegram_settings()
+    if not tg.get('telegram_bot_token') or not tg.get('telegram_chat_id'):
+        return
+    print("[Telegram] 화재 경보 발송 시작")
+    ok, err = telegram_notify.send_message(f"🚨 <b>화재 경보</b>\n{message}", settings=tg)
+    if not ok:
+        print(f"[Telegram] 메시지 실패: {err}")
+
+    # 직전 1분 녹음 첨부 (감지 시점 약간 전 데이터를 묶어 보냄)
+    tmp_path = os.path.join(tempfile.gettempdir(), f"fire_clip_{int(time.time())}.wav")
+    ok, info = telegram_notify.collect_recent_audio(tmp_path, target_seconds=60)
+    if not ok:
+        print(f"[Telegram] 녹음 모음 실패: {info}")
+        return
+    ok, err = telegram_notify.send_audio(tmp_path, caption=f"최근 1분 녹음 ({info})", settings=tg)
+    if not ok:
+        print(f"[Telegram] 오디오 발송 실패: {err}")
+    try:
+        os.remove(tmp_path)
+    except OSError:
+        pass
 
 
 def send_manual_sms_task(message, recipient_ids=None):
