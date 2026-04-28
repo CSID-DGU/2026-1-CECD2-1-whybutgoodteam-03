@@ -104,73 +104,86 @@ def inference_process(infer_q, result_q):
             print(f"[추론 프로세스] 에러: {e}", flush=True)
 
 
+class MicDisconnected(Exception):
+    pass
+
+
+# 녹음 스레드 heartbeat 미갱신이 N초 넘으면 끊김으로 간주 (USB 분리 시 stream.read가 영원히 블록되는 케이스 대응)
+MIC_HEARTBEAT_TIMEOUT_SEC = 5.0
+
+
 # ============================================================
 #  연속 녹음 스레드 (링버퍼에 계속 쌓기)
 # ============================================================
-def continuous_recording_thread(stream, ring_buffer, ring_lock, stop_event):
-    """마이크에서 연속으로 읽어서 링버퍼에 쌓는다."""
+def continuous_recording_thread(stream, ring_buffer, ring_lock, stop_event, mic_error_event, heartbeat):
+    """마이크에서 연속으로 읽어서 링버퍼에 쌓는다.
+    - 매 chunk 성공 시 heartbeat[0] = time.time() 갱신 (메인 루프 watchdog용)
+    - 명시적 read 실패 시 mic_error_event 세팅 후 종료
+    """
     while not stop_event.is_set():
         try:
             data = stream.read(CHUNK, exception_on_overflow=False)
             with ring_lock:
                 ring_buffer.append(data)
-        except IOError:
-            pass
+            heartbeat[0] = time.time()
+        except (IOError, OSError) as e:
+            print(f"❌ [녹음 스레드] read 실패: {e}", flush=True)
+            mic_error_event.set()
+            return
         except Exception as e:
             print(f"❌ [녹음 스레드 에러] {e}", flush=True)
-            break
+            mic_error_event.set()
+            return
 
 
 # ============================================================
 #  메인 프로세스
 # ============================================================
-def main():
-    print("\n=== 🔥 가드이어 감지기 (2초 슬라이딩 윈도우) 시작 ===", flush=True)
-    init_system()
-
-    # 추론 프로세스
-    infer_q = multiprocessing.Queue(maxsize=4)
-    result_q = multiprocessing.Queue()
-
-    proc = multiprocessing.Process(
-        target=inference_process,
-        args=(infer_q, result_q),
-        daemon=True,
-    )
-    proc.start()
-
-    prediction_queue = collections.deque(maxlen=3)
-
+def run_audio_session(infer_q, result_q, prediction_queue):
+    """한 번의 마이크 세션. 끊김 감지 시 MicDisconnected 발생."""
     p = pyaudio.PyAudio()
     stream = None
+    rec_thread = None
+    stop_event = threading.Event()
+    mic_error_event = threading.Event()
+    heartbeat = [time.time()]  # 녹음 스레드가 chunk 받을 때마다 갱신
 
-    # 링버퍼: 4초 분량의 chunk 개수
     chunks_for_4sec = int(MIC_RATE / CHUNK * RECORD_SECONDS)
-    # 2초마다 꺼낼 chunk 개수
-    chunks_for_slide = int(MIC_RATE / CHUNK * SLIDE_SECONDS)
+
+    def check_mic_health():
+        if mic_error_event.is_set():
+            raise MicDisconnected("녹음 스레드 read 실패")
+        if not rec_thread.is_alive():
+            raise MicDisconnected("녹음 스레드 종료")
+        gap = time.time() - heartbeat[0]
+        if gap > MIC_HEARTBEAT_TIMEOUT_SEC:
+            raise MicDisconnected(f"녹음 스레드 무응답 ({gap:.1f}s) — read가 블록됨")
 
     try:
         stream = p.open(format=FORMAT, channels=CHANNELS, rate=MIC_RATE,
                         input=True, frames_per_buffer=CHUNK, start=True)
-        print(f"🎤 마이크 설정 완료: {MIC_RATE}Hz", flush=True)
+        print(f"🎤 마이크 연결 완료: {MIC_RATE}Hz", flush=True)
         print(f"🎧 2초 슬라이딩 윈도우 모드 (녹음={RECORD_SECONDS}s, 간격={SLIDE_SECONDS}s)\n", flush=True)
 
-        # 연속 녹음용 링버퍼
         ring_buffer = collections.deque(maxlen=chunks_for_4sec)
         ring_lock = threading.Lock()
-        stop_event = threading.Event()
 
+        heartbeat[0] = time.time()
         rec_thread = threading.Thread(
             target=continuous_recording_thread,
-            args=(stream, ring_buffer, ring_lock, stop_event),
+            args=(stream, ring_buffer, ring_lock, stop_event, mic_error_event, heartbeat),
             daemon=True,
         )
         rec_thread.start()
 
-        # 처음 4초는 버퍼 채우기
-        time.sleep(RECORD_SECONDS)
+        # 처음 4초는 버퍼 채우기 (끊김 빨리 감지하려고 짧게 폴링)
+        for _ in range(int(RECORD_SECONDS * 10)):
+            check_mic_health()
+            time.sleep(0.1)
 
         while True:
+            check_mic_health()
+
             # ── 1. 링버퍼에서 4초 분량 스냅샷 ──
             with ring_lock:
                 if len(ring_buffer) < chunks_for_4sec:
@@ -181,7 +194,7 @@ def main():
             # ── 2. 파일 저장 ──
             now = datetime.now()
             timestamp_str = now.strftime("%Y-%m-%d %H:%M:%S")
-            filename_str = now.strftime("%Y%m%d_%H%M%S%f")[:19]  # 밀리초까지
+            filename_str = now.strftime("%Y%m%d_%H%M%S%f")[:19]
             wav_filename = os.path.join(RECORD_DIR, f"{filename_str}.wav")
 
             wf = wave.open(wav_filename, 'wb')
@@ -229,18 +242,68 @@ def main():
 
             # ── 5. 2초 대기 (슬라이딩 간격) ──
             time.sleep(SLIDE_SECONDS)
-
-    except KeyboardInterrupt:
-        print("\n👋 종료합니다.", flush=True)
-    except Exception as e:
-        print(f"\n❌ 에러 발생: {e}", flush=True)
     finally:
         stop_event.set()
+        # 스트림을 먼저 닫아서 stuck 상태인 stream.read()를 강제 해제 (USB 분리 시 필수)
+        if stream is not None:
+            try:
+                stream.stop_stream()
+            except Exception:
+                pass
+            try:
+                stream.close()
+            except Exception:
+                pass
+        if rec_thread is not None:
+            rec_thread.join(timeout=2)
+            if rec_thread.is_alive():
+                print("⚠️  녹음 스레드 join 타임아웃 (daemon이라 프로세스 종료 시 정리됨)", flush=True)
+        try:
+            p.terminate()
+        except Exception:
+            pass
+
+
+def main():
+    print("\n=== 🔥 가드이어 감지기 (2초 슬라이딩 윈도우) 시작 ===", flush=True)
+    init_system()
+
+    # 추론 프로세스 (한 번만 시작 — 마이크 재연결 시에도 유지)
+    infer_q = multiprocessing.Queue(maxsize=4)
+    result_q = multiprocessing.Queue()
+
+    proc = multiprocessing.Process(
+        target=inference_process,
+        args=(infer_q, result_q),
+        daemon=True,
+    )
+    proc.start()
+
+    prediction_queue = collections.deque(maxlen=3)
+
+    backoff = 1
+    try:
+        while True:
+            try:
+                run_audio_session(infer_q, result_q, prediction_queue)
+                break  # 정상 종료 (현재 코드 흐름상 도달 안 함)
+            except MicDisconnected as e:
+                print(f"⚠️  [마이크 끊김] {e} → {backoff}초 후 재연결 시도...", flush=True)
+                # 다음 세션이 깨끗하게 시작하도록 확정 큐 초기화
+                prediction_queue.clear()
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 30)
+            except Exception as e:
+                print(f"⚠️  [세션 에러] {e} → {backoff}초 후 재시작 시도...", flush=True)
+                prediction_queue.clear()
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 30)
+            else:
+                backoff = 1  # 성공 시 리셋
+    except KeyboardInterrupt:
+        print("\n👋 종료합니다.", flush=True)
+    finally:
         infer_q.put(None)
-        if stream:
-            stream.stop_stream()
-            stream.close()
-        p.terminate()
         proc.join(timeout=5)
 
 

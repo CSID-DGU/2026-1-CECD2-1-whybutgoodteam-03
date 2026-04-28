@@ -30,7 +30,7 @@ from common_raw_audio import load_wav_fixed
 AUDIO_ROOT = os.environ.get("AUDIO_ROOT", "./data/validation")  # 음원파일위치
 OUT_CSV_PATH = "./result/pipe/rule_model.csv"   # 결과 CSV
 
-RULE_MIN_SCORE = 0.07                                    # rule 프리필터 기준 (RPi 현장 튜닝값)
+RULE_MIN_SCORE = 0.06                                    # rule 프리필터 기준 (현장 로그 14k건 분석 후 0.07→0.06: 화재 catch율 92.6→96.3%)
 POSITIVE_PREFIX = {"S1", "S2", "S3", "S8", "S10"}       # 양성 클래스 prefix (GT 기준)
 
 # 3-class 공통 매핑: 0=other, 1=emergency, 2=fire_alarm

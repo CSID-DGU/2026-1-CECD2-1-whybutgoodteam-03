@@ -4,12 +4,15 @@ import atexit
 import threading
 import time
 import csv
-from flask import Flask, jsonify, request, render_template, g
+from datetime import datetime, timedelta
+from flask import Flask, jsonify, request, render_template, g, send_from_directory, abort
 from flask_cors import CORS
 from notifications import send_notification_task, send_manual_sms_task
 from health import get_health
 
 DETECTION_LOG = 'logs/detection_log.csv'
+RECORDINGS_DIR = os.path.abspath('records')
+RECORDING_WINDOW_SEC = 10  # 이벤트 타임스탬프 ±N초의 녹음본을 매칭
 
 DATABASE = 'gard-ear.db'
 DEVICE_ID = 'rasp_pi_main'
@@ -215,6 +218,102 @@ def acknowledge_event():
 @app.route('/api/events', methods=['GET'])
 def get_events():
     return jsonify(query_db("SELECT * FROM Events ORDER BY timestamp DESC"))
+
+
+@app.route('/api/events/<int:event_id>/recordings', methods=['GET'])
+def get_event_recordings(event_id):
+    """이벤트 시각 ±N초 사이의 detection_log 행 + wav 존재 여부를 반환."""
+    row = query_db("SELECT timestamp FROM Events WHERE id = ?", [event_id], one=True)
+    if not row:
+        return jsonify({'error': 'event not found'}), 404
+    try:
+        ev_ts = datetime.strptime(row['timestamp'], '%Y-%m-%d %H:%M:%S')
+    except (ValueError, TypeError):
+        return jsonify({'error': 'invalid event timestamp'}), 500
+
+    lo = ev_ts - timedelta(seconds=RECORDING_WINDOW_SEC)
+    hi = ev_ts + timedelta(seconds=RECORDING_WINDOW_SEC)
+
+    items = []
+    try:
+        with open(DETECTION_LOG, 'r', encoding='utf-8-sig', errors='replace') as f:
+            reader = csv.DictReader(f)
+            for r in reader:
+                ts_str = r.get('timestamp', '').strip()
+                if not ts_str:
+                    continue
+                try:
+                    ts = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
+                except ValueError:
+                    continue
+                if not (lo <= ts <= hi):
+                    continue
+                fname = (r.get('filename') or '').strip()
+                if not fname:
+                    continue
+                exists = os.path.isfile(os.path.join(RECORDINGS_DIR, fname))
+                items.append({
+                    'filename': fname,
+                    'timestamp': ts_str,
+                    'stage': r.get('stage'),
+                    'rule_score': float(r['rule_score']) if r.get('rule_score') else None,
+                    'pred_label': r.get('pred_label') or None,
+                    'pred_prob': float(r['pred_prob']) if r.get('pred_prob') else None,
+                    'is_fire': r.get('is_fire') == '1',
+                    'exists': exists,
+                })
+    except FileNotFoundError:
+        return jsonify({'event_timestamp': row['timestamp'], 'recordings': []})
+
+    return jsonify({'event_timestamp': row['timestamp'], 'recordings': items})
+
+
+@app.route('/api/detections/recent', methods=['GET'])
+def get_recent_detections():
+    """최근 N초 내 detection_log 행 + wav 존재 여부."""
+    try:
+        seconds = int(request.args.get('seconds', 60))
+    except (TypeError, ValueError):
+        seconds = 60
+    seconds = max(1, min(seconds, 600))
+    cutoff = datetime.now() - timedelta(seconds=seconds)
+
+    items = []
+    try:
+        with open(DETECTION_LOG, 'r', encoding='utf-8-sig', errors='replace') as f:
+            reader = csv.DictReader(f)
+            for r in reader:
+                ts_str = (r.get('timestamp') or '').strip()
+                try:
+                    ts = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
+                except ValueError:
+                    continue
+                if ts < cutoff:
+                    continue
+                fname = (r.get('filename') or '').strip()
+                items.append({
+                    'filename': fname,
+                    'timestamp': ts_str,
+                    'stage': r.get('stage'),
+                    'rule_score': float(r['rule_score']) if r.get('rule_score') else None,
+                    'pred_label': r.get('pred_label') or None,
+                    'pred_prob': float(r['pred_prob']) if r.get('pred_prob') else None,
+                    'is_fire': r.get('is_fire') == '1',
+                    'exists': bool(fname) and os.path.isfile(os.path.join(RECORDINGS_DIR, fname)),
+                })
+    except FileNotFoundError:
+        pass
+
+    items.sort(key=lambda x: x['timestamp'], reverse=True)
+    return jsonify({'seconds': seconds, 'recordings': items})
+
+
+@app.route('/api/recordings/<path:filename>', methods=['GET'])
+def get_recording(filename):
+    # 경로 탈출 방지: 파일명에 슬래시/.. 차단, .wav만 허용
+    if '/' in filename or '\\' in filename or '..' in filename or not filename.lower().endswith('.wav'):
+        abort(400)
+    return send_from_directory(RECORDINGS_DIR, filename, mimetype='audio/wav', conditional=True)
 
 @app.route('/api/logs', methods=['GET'])
 def get_logs():

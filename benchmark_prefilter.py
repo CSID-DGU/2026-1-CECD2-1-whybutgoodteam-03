@@ -30,7 +30,7 @@ NUM_SAMPLES = 50
 RECORDS_DIR = "./records"
 TARGET_SR = 22050
 OUT_LEN = 88200
-RULE_MIN_SCORE = 0.07
+RULE_MIN_SCORE = 0.06
 CLASS_NAMES = ["other", "emergency", "fire_alarm"]
 
 

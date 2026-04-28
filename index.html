@@ -204,7 +204,7 @@
                                 <span id="hb-score-text">—</span>
                             </div>
                             <div class="meter-bar"><div id="hb-score-bar" class="meter-fill" style="width:0%"></div></div>
-                            <div class="text-xs text-gray-400 mt-1">기준: 0.07 이상 → 딥러닝 분류 진행</div>
+                            <div class="text-xs text-gray-400 mt-1">기준: 0.06 이상 → 딥러닝 분류 진행</div>
                         </div>
                     </div>
                 </section>
@@ -239,8 +239,25 @@
                             <span id="sh-throttle" class="px-2 py-0.5 rounded bg-gray-100 text-gray-600">—</span>
                             <span class="text-gray-400 ml-2">Load avg(1m):</span>
                             <span id="sh-load" class="font-mono text-gray-700">—</span>
+                            <span class="text-gray-400 ml-2">마이크:</span>
+                            <span id="sh-mic" class="px-2 py-0.5 rounded bg-gray-100 text-gray-600">—</span>
+                            <span class="text-gray-400 ml-2">Tailscale:</span>
+                            <span id="sh-tailscale" class="px-2 py-0.5 rounded bg-gray-100 text-gray-600">—</span>
                             <span id="sh-host-note" class="ml-auto text-gray-400">— 임계 75°C 3분 지속 시 SMS 알림</span>
                         </div>
+                    </div>
+                </section>
+
+                <section class="mt-8">
+                    <div class="flex items-center justify-between mb-4">
+                        <h2 class="text-xl sm:text-2xl font-semibold text-gray-800">최근 녹음 (1분)</h2>
+                        <div class="flex items-center gap-2">
+                            <span id="recent-rec-meta" class="text-xs text-gray-400"></span>
+                            <button type="button" id="recent-rec-refresh" class="px-3 py-1 rounded-md bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs">새로고침</button>
+                        </div>
+                    </div>
+                    <div id="recent-recordings-list" class="bg-white p-4 rounded-lg border shadow-sm max-h-96 overflow-y-auto text-sm">
+                        <div class="text-gray-400 text-xs">불러오는 중...</div>
                     </div>
                 </section>
             </div>
@@ -255,6 +272,7 @@
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">이벤트 ID</th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">감지 시간</th>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">상태</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">녹음</th>
                             </tr>
                         </thead>
                         <tbody id="events-table-body" class="bg-white divide-y divide-gray-200">
@@ -592,7 +610,7 @@
 
             tbody.innerHTML = '';
             if (events.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="3" class="empty-cell px-6 py-4 text-center text-gray-500">감지된 이벤트가 없습니다.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="4" class="empty-cell px-6 py-4 text-center text-gray-500">감지된 이벤트가 없습니다.</td></tr>';
                 return;
             }
             events.forEach(event => {
@@ -605,9 +623,61 @@
                             ${event.event_type === 'fire_alarm_detected' ? '화재 감지' : event.event_type}
                         </span>
                     </td>
+                    <td data-label="녹음" class="px-6 py-4 whitespace-nowrap text-sm">
+                        <button type="button" class="px-3 py-1 rounded-md bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-medium" onclick="toggleEventRecordings(${event.id}, this)">🔊 듣기</button>
+                    </td>
                 `;
                 tbody.appendChild(tr);
+
+                const detailTr = document.createElement('tr');
+                detailTr.id = `event-rec-${event.id}`;
+                detailTr.className = 'hidden';
+                detailTr.innerHTML = `<td colspan="4" class="px-6 py-3 bg-gray-50 text-sm text-gray-600"><div class="text-gray-400 text-xs">로드 대기...</div></td>`;
+                tbody.appendChild(detailTr);
             });
+        }
+
+        async function toggleEventRecordings(eventId, btn) {
+            const tr = document.getElementById(`event-rec-${eventId}`);
+            if (!tr) return;
+            if (!tr.classList.contains('hidden')) {
+                tr.classList.add('hidden');
+                btn.textContent = '🔊 듣기';
+                return;
+            }
+            tr.classList.remove('hidden');
+            btn.textContent = '닫기';
+            const cell = tr.querySelector('td');
+            cell.innerHTML = '<div class="text-gray-400 text-xs">불러오는 중...</div>';
+            try {
+                const res = await fetch(`/api/events/${eventId}/recordings`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                const recs = data.recordings || [];
+                if (recs.length === 0) {
+                    cell.innerHTML = '<div class="text-gray-500 text-xs">해당 시각 ±10초 내 녹음본이 없습니다.</div>';
+                    return;
+                }
+                cell.innerHTML = recs.map(r => {
+                    const fireBadge = r.is_fire
+                        ? '<span class="px-2 py-0.5 rounded bg-red-100 text-red-800 text-xs">FIRE</span>'
+                        : '<span class="px-2 py-0.5 rounded bg-gray-200 text-gray-600 text-xs">non-fire</span>';
+                    const label = r.pred_label || r.stage || '-';
+                    const prob = r.pred_prob != null ? ` (${(r.pred_prob * 100).toFixed(0)}%)` : '';
+                    const audio = r.exists
+                        ? `<audio controls preload="none" src="/api/recordings/${encodeURIComponent(r.filename)}" class="h-8"></audio>`
+                        : '<span class="text-gray-400 text-xs">파일 없음</span>';
+                    return `
+                        <div class="flex flex-wrap items-center gap-3 py-1 border-b last:border-b-0 border-gray-200">
+                            <span class="text-xs text-gray-500 font-mono">${r.timestamp}</span>
+                            ${fireBadge}
+                            <span class="text-xs text-gray-700">${label}${prob}</span>
+                            ${audio}
+                        </div>`;
+                }).join('');
+            } catch (e) {
+                cell.innerHTML = `<div class="text-red-500 text-xs">로드 실패: ${e.message}</div>`;
+            }
         }
 
         // (v4: camera_url 제거)
@@ -1064,9 +1134,64 @@
 
                 const loadEl = document.getElementById('sh-load');
                 loadEl.textContent = h.load_avg_1m != null ? h.load_avg_1m.toFixed(2) : '—';
+
+                const setBoolBadge = (el, val, okText, badText, naText) => {
+                    if (val === true) {
+                        el.textContent = okText;
+                        el.className = 'px-2 py-0.5 rounded bg-green-100 text-green-800';
+                    } else if (val === false) {
+                        el.textContent = badText;
+                        el.className = 'px-2 py-0.5 rounded bg-red-100 text-red-800';
+                    } else {
+                        el.textContent = naText;
+                        el.className = 'px-2 py-0.5 rounded bg-gray-100 text-gray-500';
+                    }
+                };
+                setBoolBadge(document.getElementById('sh-mic'), h.mic_ok, '정상', '미인식', '— (호스트 미지원)');
+                setBoolBadge(document.getElementById('sh-tailscale'), h.tailscale_ok, '연결됨', '끊김', '— (미설치)');
             } catch (e) {
                 console.warn('health err', e);
             }
+        }
+
+        async function loadRecentRecordings() {
+            const list = document.getElementById('recent-recordings-list');
+            const meta = document.getElementById('recent-rec-meta');
+            if (!list) return;
+            try {
+                const r = await fetch('/api/detections/recent?seconds=60', { cache: 'no-store' });
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                const data = await r.json();
+                const items = data.recordings || [];
+                if (meta) meta.textContent = `${items.length}건 · ${new Date().toLocaleTimeString('ko-KR')}`;
+                if (items.length === 0) {
+                    list.innerHTML = '<div class="text-gray-500 text-xs">최근 1분간 녹음이 없습니다.</div>';
+                    return;
+                }
+                list.innerHTML = items.map(r => {
+                    const fireBadge = r.is_fire
+                        ? '<span class="px-2 py-0.5 rounded bg-red-100 text-red-800 text-xs">FIRE</span>'
+                        : '';
+                    const label = r.pred_label || r.stage || '-';
+                    const prob = r.pred_prob != null ? ` (${(r.pred_prob * 100).toFixed(0)}%)` : '';
+                    const audio = r.exists
+                        ? `<audio controls preload="none" src="/api/recordings/${encodeURIComponent(r.filename)}" class="h-8"></audio>`
+                        : '<span class="text-xs text-gray-400">파일 없음</span>';
+                    return `
+                        <div class="flex flex-wrap items-center gap-3 py-2 border-b last:border-b-0 border-gray-100">
+                            <span class="text-xs text-gray-500 font-mono">${r.timestamp}</span>
+                            ${fireBadge}
+                            <span class="text-xs text-gray-700">${label}${prob}</span>
+                            ${audio}
+                        </div>`;
+                }).join('');
+            } catch (e) {
+                list.innerHTML = `<div class="text-red-500 text-xs">로드 실패: ${e.message}</div>`;
+            }
+        }
+
+        function isAnyRecentAudioPlaying() {
+            return [...document.querySelectorAll('#recent-recordings-list audio')].some(a => !a.paused && !a.ended);
         }
 
         // --- 초기화 로직 ---
@@ -1077,6 +1202,13 @@
             setInterval(pollHeartbeat, 1000);
             pollHealth();
             setInterval(pollHealth, 5000);
+            loadRecentRecordings();
+            setInterval(() => {
+                // 재생 중이면 갱신 미루기 (DOM 교체로 재생 끊기지 않도록)
+                if (!isAnyRecentAudioPlaying()) loadRecentRecordings();
+            }, 15000);
+            const refreshBtn = document.getElementById('recent-rec-refresh');
+            if (refreshBtn) refreshBtn.addEventListener('click', loadRecentRecordings);
         }
 
         async function pollStatus() {

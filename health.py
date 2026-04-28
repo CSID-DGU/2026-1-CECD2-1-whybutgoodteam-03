@@ -1,4 +1,5 @@
 """라즈베리파이 시스템 상태 수집. 비-RPi 환경에서는 가능한 항목만 채우고 나머지는 None."""
+import json
 import os
 import subprocess
 
@@ -14,6 +15,34 @@ def read_cpu_temp_c():
             return int(f.read().strip()) / 1000.0
     except Exception:
         return None
+
+
+def read_mic_ok():
+    # arecord -l 에 캡처 가능한 카드가 한 줄이라도 있으면 OK
+    try:
+        out = subprocess.check_output(
+            ['arecord', '-l'], stderr=subprocess.STDOUT, timeout=2
+        ).decode(errors='replace')
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return False
+    return any(line.startswith('card ') for line in out.splitlines())
+
+
+def read_tailscale_ok():
+    try:
+        out = subprocess.check_output(
+            ['tailscale', 'status', '--json'], stderr=subprocess.STDOUT, timeout=2
+        ).decode(errors='replace')
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return False
+    try:
+        return json.loads(out).get('BackendState') == 'Running'
+    except Exception:
+        return False
 
 
 def read_throttled():
@@ -44,6 +73,8 @@ def get_health():
         'memory_percent': None,
         'disk_percent': None,
         'load_avg_1m': None,
+        'mic_ok': read_mic_ok(),
+        'tailscale_ok': read_tailscale_ok(),
         'psutil_available': psutil is not None,
     }
     if psutil is not None:

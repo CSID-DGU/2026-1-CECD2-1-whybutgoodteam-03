@@ -33,7 +33,7 @@ from common_raw_audio import load_wav_fixed
 AIHUB_DIR = "./aihub_test"
 TARGET_SR = 22050
 OUT_LEN = 88200  # 4초 @ 22050Hz
-RULE_MIN_SCORE = 0.07
+RULE_MIN_SCORE = 0.06
 
 CLASS_NAMES = ["other", "emergency", "fire_alarm"]
 # GT 매핑: 디렉토리명 -> 클래스 인덱스
