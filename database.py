@@ -60,7 +60,7 @@ def create_tables():
     )
     ''')
 
-    # 5. 시스템 설정 테이블 (v7: 관리자 비밀번호 + 발신자 정보 + Telegram)
+    # 5. 시스템 설정 테이블 (v8: + Telegram 다중 수신자)
     c.execute('''
     CREATE TABLE SystemSettings (
         id INTEGER PRIMARY KEY CHECK(id = 1),
@@ -72,10 +72,22 @@ def create_tables():
         solapi_api_secret TEXT DEFAULT '',
         solapi_sender_number TEXT DEFAULT '',
         telegram_bot_token TEXT DEFAULT '',
-        telegram_chat_id TEXT DEFAULT ''
+        telegram_chat_id TEXT DEFAULT '',
+        telegram_update_offset INTEGER DEFAULT 0
     )
     ''')
     c.execute("INSERT INTO SystemSettings (id) VALUES (1)")
+
+    # 6. Telegram 수신자 (자동 등록)
+    c.execute('''
+    CREATE TABLE TelegramSubscribers (
+        chat_id INTEGER PRIMARY KEY,
+        name TEXT,
+        chat_type TEXT,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        registered_at DATETIME DEFAULT (datetime('now','localtime'))
+    )
+    ''')
 
     conn.commit()
     conn.close()

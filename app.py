@@ -440,19 +440,56 @@ def build_status_report():
     return '\n'.join(lines)
 
 
+def _send_dashboard_url(reason='boot'):
+    """대시보드 접속 URL을 Telegram으로 알림. reason: 'boot' | 'ip_changed'."""
+    tg = telegram_notify.load_telegram_settings()
+    if not (tg.get('telegram_bot_token') and tg.get('telegram_chat_id')):
+        return None
+    ip = _get_local_ip()
+    if not ip:
+        return None
+    url = f'http://{ip}:5000'
+    if reason == 'boot':
+        msg = (
+            f"🟢 <b>가드이어 시작됨</b>\n"
+            f"📱 대시보드: <a href=\"{url}\">{url}</a>\n"
+            f"같은 Wi-Fi에서 위 주소로 접속하세요."
+        )
+    else:
+        msg = (
+            f"♻️ <b>IP 변경 감지</b>\n"
+            f"📱 새 대시보드 주소: <a href=\"{url}\">{url}</a>"
+        )
+    ok, err = telegram_notify.send_message(msg, settings=tg)
+    if not ok:
+        print(f"[Telegram URL 알림] 실패: {err}")
+    return ip
+
+
 def status_reporter_loop():
-    # 부팅 직후 30초 뒤 첫 보고 → 그 다음부터 30분 주기
-    time.sleep(30)
+    # 부팅 직후: 네트워크가 잡힐 때까지 잠깐 대기 후 URL 발송
+    time.sleep(15)
+    last_ip = _send_dashboard_url(reason='boot')
+
+    # IP 변경 감지: 60초 주기로 확인. 30분마다는 정기 상태 보고.
+    last_status_t = time.time()
     while True:
+        time.sleep(60)
         try:
-            tg = telegram_notify.load_telegram_settings()
-            if tg.get('telegram_bot_token') and tg.get('telegram_chat_id'):
-                ok, err = telegram_notify.send_message(build_status_report(), settings=tg)
-                if not ok:
-                    print(f"[Telegram 상태 보고] 실패: {err}")
+            cur_ip = _get_local_ip()
+            if cur_ip and cur_ip != last_ip:
+                print(f"[IP 변경] {last_ip} → {cur_ip}")
+                last_ip = _send_dashboard_url(reason='ip_changed') or cur_ip
+
+            if time.time() - last_status_t >= STATUS_REPORT_INTERVAL_SEC:
+                tg = telegram_notify.load_telegram_settings()
+                if tg.get('telegram_bot_token') and tg.get('telegram_chat_id'):
+                    ok, err = telegram_notify.send_message(build_status_report(), settings=tg)
+                    if not ok:
+                        print(f"[Telegram 상태 보고] 실패: {err}")
+                last_status_t = time.time()
         except Exception as e:
-            print(f"[Telegram 상태 보고] 예외: {e}")
-        time.sleep(STATUS_REPORT_INTERVAL_SEC)
+            print(f"[Telegram 보고 루프] 예외: {e}")
 
 
 if __name__ == '__main__':
@@ -461,5 +498,6 @@ if __name__ == '__main__':
         database.create_tables()
 
     threading.Thread(target=status_reporter_loop, daemon=True).start()
+    telegram_notify.start_poll_thread()
 
     app.run(host='0.0.0.0', port=5000)
