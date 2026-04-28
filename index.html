@@ -32,15 +32,75 @@
         .meter-bar { height: 8px; background: #e5e7eb; border-radius: 999px; overflow: hidden; }
         .meter-fill { height: 100%; background: linear-gradient(90deg, #60a5fa, #6366f1); transition: width 0.3s; }
         .tab-btn {
-            padding: 0.75rem 1.25rem;
+            padding: 0.5rem 0.875rem;
             border-radius: 0.5rem;
             border-bottom-left-radius: 0;
             border-bottom-right-radius: 0;
             cursor: pointer;
             font-weight: 600;
+            font-size: 0.875rem;
+            white-space: nowrap;
             color: #6b7280; /* text-gray-500 */
             border: 1px solid transparent;
             border-bottom: 1px solid #e5e7eb; /* border-gray-200 */
+        }
+        @media (min-width: 640px) {
+            .tab-btn { padding: 0.75rem 1.25rem; font-size: 1rem; }
+        }
+        /* 모바일: 탭바 → 세로 드롭다운 메뉴 */
+        @media (max-width: 639px) {
+            .tab-btn {
+                width: 100%;
+                text-align: left;
+                border-radius: 0;
+                border: none;
+                border-bottom: 1px solid #e5e7eb;
+                padding: 0.875rem 1rem;
+                background-color: white;
+            }
+            .tab-btn.active {
+                background-color: #eff6ff; /* blue-50 */
+                color: #1d4ed8;
+                border-bottom-color: #e5e7eb;
+            }
+        }
+        /* 모바일: 테이블 → 카드 리스트 */
+        @media (max-width: 639px) {
+            .responsive-table thead { display: none; }
+            .responsive-table tbody, .responsive-table tr, .responsive-table td { display: block; }
+            .responsive-table tr {
+                background: white;
+                padding: 0.75rem 1rem;
+                border-bottom: 1px solid #e5e7eb;
+            }
+            .responsive-table tr:last-child { border-bottom: none; }
+            .responsive-table td {
+                display: flex;
+                justify-content: space-between;
+                align-items: flex-start;
+                gap: 0.75rem;
+                padding: 0.25rem 0;
+                white-space: normal !important;
+                text-align: right;
+                font-size: 0.875rem;
+            }
+            .responsive-table td::before {
+                content: attr(data-label);
+                font-weight: 600;
+                color: #6b7280;
+                font-size: 0.75rem;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+                flex-shrink: 0;
+                padding-top: 0.125rem;
+            }
+            .responsive-table td.empty-cell {
+                display: block;
+                text-align: center;
+                color: #6b7280;
+                padding: 1rem;
+            }
+            .responsive-table td.empty-cell::before { display: none; }
         }
         .tab-btn.active {
             color: #1d4ed8; /* text-blue-700 */
@@ -61,21 +121,34 @@
 
     <div class="max-w-4xl mx-auto bg-white rounded-xl shadow-lg overflow-hidden">
         <!-- 상단 헤더 -->
-        <header class="p-6 bg-gray-900 text-white">
-            <h1 class="text-3xl font-bold">가드이어 로컬 대시보드</h1>
-            <p class="text-gray-300 mt-1">화재 경보 모니터링 시스템 v4</p>
+        <header class="p-4 sm:p-6 bg-gray-900 text-white">
+            <h1 class="text-2xl sm:text-3xl font-bold">가드이어 로컬 대시보드</h1>
+            <p class="text-gray-300 mt-1 text-sm sm:text-base">화재 경보 모니터링 시스템 v4</p>
         </header>
 
         <!-- 긴급 알림 배너 (평소엔 숨겨짐) -->
-        <div id="alert-banner" class="hidden items-center justify-center p-4 bg-red-600 text-white font-bold text-lg alert-pulse">
+        <div id="alert-banner" class="hidden items-center justify-center p-3 sm:p-4 bg-red-600 text-white font-bold text-base sm:text-lg alert-pulse text-center">
             <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 mr-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
             긴급: 화재 경보 감지!
         </div>
 
-        <!-- 탭 네비게이션 -->
-        <nav class="flex border-b border-gray-200 px-4 pt-4 bg-gray-50">
+        <!-- 모바일 햄버거 헤더 -->
+        <div class="sm:hidden flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-gray-50">
+            <span id="current-tab-label" class="font-semibold text-gray-700">대시보드</span>
+            <button id="hamburger-btn" type="button" class="p-2 rounded hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500" aria-label="메뉴 열기" aria-expanded="false">
+                <svg id="hamburger-icon-open" class="w-6 h-6 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+                </svg>
+                <svg id="hamburger-icon-close" class="w-6 h-6 text-gray-700 hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+            </button>
+        </div>
+
+        <!-- 탭 네비게이션 (모바일에선 햄버거로 토글) -->
+        <nav id="tab-nav" class="hidden sm:flex flex-col sm:flex-row sm:overflow-x-auto border-b border-gray-200 sm:px-4 sm:pt-4 bg-gray-50">
             <button class="tab-btn active" onclick="showTab('dashboard')">대시보드</button>
             <button class="tab-btn" onclick="showTab('events')">이벤트 내역</button>
             <button class="tab-btn" onclick="showTab('settings')">설정</button>
@@ -83,20 +156,20 @@
         </nav>
 
         <!-- 탭 컨텐츠 -->
-        <div class="p-6 md:p-8">
+        <div class="p-4 sm:p-6 md:p-8">
             <!-- 1. 대시보드 탭 -->
             <div id="dashboard" class="tab-content active">
                 <section>
-                    <h2 class="text-2xl font-semibold mb-4 text-gray-800">장치 상태</h2>
+                    <h2 class="text-xl sm:text-2xl font-semibold mb-4 text-gray-800">장치 상태</h2>
                     <div id="device-status-card" class="p-6 rounded-lg border-2">
                         <!-- 이 내용은 updateDashboardUI()에 의해 동적으로 채워집니다 -->
                     </div>
                 </section>
                 
                 <section class="mt-8">
-                    <h2 class="text-2xl font-semibold mb-4 text-gray-800">감지기 실시간 상태</h2>
-                    <div class="bg-white p-6 rounded-lg border shadow-sm">
-                        <div class="flex items-center gap-4 mb-4">
+                    <h2 class="text-xl sm:text-2xl font-semibold mb-4 text-gray-800">감지기 실시간 상태</h2>
+                    <div class="bg-white p-4 sm:p-6 rounded-lg border shadow-sm">
+                        <div class="flex flex-wrap items-center gap-4 mb-4">
                             <span id="hb-dot" class="pulse-dot"></span>
                             <div>
                                 <div id="hb-status-text" class="text-lg font-bold text-gray-700">감지기 상태 확인 중...</div>
@@ -139,9 +212,9 @@
 
             <!-- 2. 이벤트 내역 탭 -->
             <div id="events" class="tab-content">
-                <h2 class="text-2xl font-semibold mb-4 text-gray-800">화재 감지 이벤트 내역</h2>
-                <div class="max-h-96 overflow-y-auto border rounded-lg">
-                    <table class="min-w-full divide-y divide-gray-200">
+                <h2 class="text-xl sm:text-2xl font-semibold mb-4 text-gray-800">화재 감지 이벤트 내역</h2>
+                <div class="max-h-96 overflow-auto border rounded-lg">
+                    <table class="responsive-table min-w-full divide-y divide-gray-200">
                         <thead class="bg-gray-50">
                             <tr>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">이벤트 ID</th>
@@ -160,14 +233,14 @@
             <div id="settings" class="tab-content">
                 <!-- 연락처 관리 -->
                 <section>
-                    <h2 class="text-2xl font-semibold mb-4 text-gray-800">알림 연락처 관리</h2>
+                    <h2 class="text-xl sm:text-2xl font-semibold mb-4 text-gray-800">알림 연락처 관리</h2>
                     <form id="contact-form" class="space-y-4 mb-6">
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <input type="text" id="contact-name" placeholder="설명 (예: 관리자A)" class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" required>
                             <input type="text" id="contact-phone" placeholder="휴대폰 번호 (예: 01012345678)" class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
                             <input type="email" id="contact-email" placeholder="이메일 (예: user@example.com)" class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
                         </div>
-                        <button type="submit" class="px-6 py-2 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50">
+                        <button type="submit" class="w-full sm:w-auto px-6 py-2 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50">
                             연락처 추가
                         </button>
                     </form>
@@ -178,13 +251,13 @@
 
                 <!-- 시스템 설정 (v4: 카메라 제거) -->
                 <section class="mt-8 border-t pt-8">
-                    <h2 class="text-2xl font-semibold mb-4 text-gray-800">시스템 설정</h2>
+                    <h2 class="text-xl sm:text-2xl font-semibold mb-4 text-gray-800">시스템 설정</h2>
                     <form id="system-settings-form" class="space-y-4">
                         <div>
                             <label for="system-location" class="block text-sm font-medium text-gray-700">설치 위치</label>
                             <input type="text" id="system-location" placeholder="예: 거실, 경비실" class="mt-1 w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
                         </div>
-                        <button type="submit" class="px-6 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-50">
+                        <button type="submit" class="w-full sm:w-auto px-6 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-50">
                             시스템 설정 저장
                         </button>
                     </form>
@@ -193,10 +266,10 @@
 
                 <!-- 관리자 설정 (발신자 정보) -->
                 <section class="mt-8 border-t pt-8">
-                    <div class="bg-gray-50 p-6 rounded-lg border border-gray-200">
-                        <div class="flex justify-between items-center mb-4">
-                            <h2 class="text-2xl font-semibold text-gray-800">관리자 설정 (발신자 정보)</h2>
-                            <button id="btn-admin-login" class="px-4 py-2 bg-gray-800 text-white font-semibold rounded-lg hover:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-gray-500">
+                    <div class="bg-gray-50 p-4 sm:p-6 rounded-lg border border-gray-200">
+                        <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 mb-4">
+                            <h2 class="text-xl sm:text-2xl font-semibold text-gray-800">관리자 설정 (발신자 정보)</h2>
+                            <button id="btn-admin-login" class="w-full sm:w-auto px-4 py-2 bg-gray-800 text-white font-semibold rounded-lg hover:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-gray-500">
                                 관리자 로그인
                             </button>
                         </div>
@@ -222,7 +295,7 @@
                                 </div>
 
                                 <div class="text-right">
-                                    <button type="submit" class="px-6 py-3 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                    <button type="submit" class="w-full sm:w-auto px-6 py-3 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500">
                                         발신자 정보 저장
                                     </button>
                                 </div>
@@ -235,9 +308,9 @@
 
             <!-- 4. 발송 내역 탭 -->
             <div id="logs" class="tab-content">
-                <h2 class="text-2xl font-semibold mb-4 text-gray-800">알림 발송 내역</h2>
-                <div class="max-h-96 overflow-y-auto border rounded-lg">
-                    <table class="min-w-full divide-y divide-gray-200">
+                <h2 class="text-xl sm:text-2xl font-semibold mb-4 text-gray-800">알림 발송 내역</h2>
+                <div class="max-h-96 overflow-auto border rounded-lg">
+                    <table class="responsive-table min-w-full divide-y divide-gray-200">
                         <thead class="bg-gray-50">
                             <tr>
                                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">시간</th>
@@ -321,6 +394,13 @@
 
         // --- UI 렌더링 함수 ---
 
+        const TAB_LABELS = {
+            dashboard: '대시보드',
+            events: '이벤트 내역',
+            settings: '설정',
+            logs: '발송 내역'
+        };
+
         function showTab(tabName) {
             document.querySelectorAll('.tab-content').forEach(content => {
                 content.classList.remove('active');
@@ -330,6 +410,13 @@
             });
             document.getElementById(tabName).classList.add('active');
             document.querySelector(`.tab-btn[onclick="showTab('${tabName}')"]`).classList.add('active');
+
+            // 모바일: 현재 탭 라벨 갱신 + 햄버거 메뉴 닫기
+            const labelEl = document.getElementById('current-tab-label');
+            if (labelEl && TAB_LABELS[tabName]) labelEl.textContent = TAB_LABELS[tabName];
+            if (window.matchMedia('(max-width: 639px)').matches) {
+                closeMobileMenu();
+            }
 
             if (tabName === 'dashboard') {
                 updateDashboardUI(currentStatus);
@@ -341,6 +428,42 @@
                 loadLogsData();
             }
         }
+
+        function openMobileMenu() {
+            const nav = document.getElementById('tab-nav');
+            const btn = document.getElementById('hamburger-btn');
+            nav.classList.remove('hidden');
+            nav.classList.add('flex');
+            document.getElementById('hamburger-icon-open').classList.add('hidden');
+            document.getElementById('hamburger-icon-close').classList.remove('hidden');
+            btn.setAttribute('aria-expanded', 'true');
+            btn.setAttribute('aria-label', '메뉴 닫기');
+        }
+        function closeMobileMenu() {
+            const nav = document.getElementById('tab-nav');
+            const btn = document.getElementById('hamburger-btn');
+            nav.classList.add('hidden');
+            nav.classList.remove('flex');
+            document.getElementById('hamburger-icon-open').classList.remove('hidden');
+            document.getElementById('hamburger-icon-close').classList.add('hidden');
+            btn.setAttribute('aria-expanded', 'false');
+            btn.setAttribute('aria-label', '메뉴 열기');
+        }
+        function toggleMobileMenu() {
+            const nav = document.getElementById('tab-nav');
+            if (nav.classList.contains('hidden')) openMobileMenu();
+            else closeMobileMenu();
+        }
+        // 데스크톱(>=640px)으로 리사이즈 시 nav 항상 보이도록 클래스 정리
+        window.addEventListener('resize', () => {
+            if (window.matchMedia('(min-width: 640px)').matches) {
+                const nav = document.getElementById('tab-nav');
+                nav.classList.remove('hidden');
+                nav.classList.remove('flex');
+                document.getElementById('hamburger-icon-open').classList.remove('hidden');
+                document.getElementById('hamburger-icon-close').classList.add('hidden');
+            }
+        });
 
         function updateUIOnPoll(newStatus) {
             if (!newStatus) return; 
@@ -408,17 +531,17 @@
             const tbody = document.getElementById('events-table-body');
             if (!events || !tbody) return;
 
-            tbody.innerHTML = ''; 
+            tbody.innerHTML = '';
             if (events.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="3" class="px-6 py-4 text-center text-gray-500">감지된 이벤트가 없습니다.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="3" class="empty-cell px-6 py-4 text-center text-gray-500">감지된 이벤트가 없습니다.</td></tr>';
                 return;
             }
             events.forEach(event => {
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${event.id}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${fmtKST(event.timestamp)}</td>
-                    <td class="px-6 py-4 whitespace-nowrap">
+                    <td data-label="이벤트 ID" class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${event.id}</td>
+                    <td data-label="감지 시간" class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${fmtKST(event.timestamp)}</td>
+                    <td data-label="상태" class="px-6 py-4 whitespace-nowrap">
                         <span class="px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800">
                             ${event.event_type === 'fire_alarm_detected' ? '화재 감지' : event.event_type}
                         </span>
@@ -438,14 +561,14 @@
             listDiv.innerHTML = ''; 
             contacts.forEach(contact => {
                 const div = document.createElement('div');
-                div.className = 'flex items-center justify-between p-3 bg-gray-50 rounded-lg border';
+                div.className = 'flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3 bg-gray-50 rounded-lg border';
                 div.innerHTML = `
-                    <div>
+                    <div class="min-w-0 break-all">
                         <span class="font-semibold">${contact.name}</span>
-                        <span class="text-sm text-gray-600 ml-2">${contact.phone || ''}</span>
-                        <span class="text-sm text-gray-600 ml-2">${contact.email || ''}</span>
+                        <span class="text-sm text-gray-600 sm:ml-2 block sm:inline">${contact.phone || ''}</span>
+                        <span class="text-sm text-gray-600 sm:ml-2 block sm:inline">${contact.email || ''}</span>
                     </div>
-                    <div class="flex items-center gap-4">
+                    <div class="flex items-center gap-4 flex-wrap">
                         <label class="inline-flex items-center cursor-pointer">
                             <input type="checkbox" class="sr-only peer" ${contact.is_active ? 'checked' : ''} onchange="handleToggleActive(${contact.id}, this.checked)">
                             <div class="relative w-11 h-6 bg-gray-200 rounded-full peer peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600"></div>
@@ -469,25 +592,24 @@
             const tbody = document.getElementById('logs-table-body');
             if (!logs || !tbody) return;
 
-            tbody.innerHTML = ''; 
+            tbody.innerHTML = '';
             if (logs.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="5" class="px-6 py-4 text-center text-gray-500">발송된 알림이 없습니다.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="5" class="empty-cell px-6 py-4 text-center text-gray-500">발송된 알림이 없습니다.</td></tr>';
                 return;
             }
             logs.forEach(log => {
-const tr = document.createElement('tr');
-                // [UI 수정] 상태에 따른 배지 색상 및 텍스트 처리
+                const tr = document.createElement('tr');
                 let statusHtml = '';
                 if (log.status === 'success') statusHtml = '<span class="px-2 py-1 rounded-full bg-green-100 text-green-800 text-xs font-semibold">성공</span>';
                 else if (log.status === 'failed') statusHtml = '<span class="px-2 py-1 rounded-full bg-red-100 text-red-800 text-xs font-semibold">실패</span>';
                 else if (log.status === 'pending') statusHtml = '<span class="px-2 py-1 rounded-full bg-yellow-100 text-yellow-800 text-xs font-semibold animate-pulse">전송 중...</span>';
-                
+
                 tr.innerHTML = `
-                    <td class="px-6 py-4 text-sm text-gray-500">${fmtKST(log.timestamp)}</td>
-                    <td class="px-6 py-4 text-sm text-gray-500">${log.type.toUpperCase()}</td>
-                    <td class="px-6 py-4 text-sm text-gray-900">${log.recipient_name}</td>
-                    <td class="px-6 py-4 text-sm text-gray-600">${log.message}</td>
-                    <td class="px-6 py-4 whitespace-nowrap">${statusHtml}</td>
+                    <td data-label="시간" class="px-6 py-4 text-sm text-gray-500">${fmtKST(log.timestamp)}</td>
+                    <td data-label="유형" class="px-6 py-4 text-sm text-gray-500">${log.type.toUpperCase()}</td>
+                    <td data-label="수신자" class="px-6 py-4 text-sm text-gray-900">${log.recipient_name}</td>
+                    <td data-label="내용" class="px-6 py-4 text-sm text-gray-600">${log.message}</td>
+                    <td data-label="상태" class="px-6 py-4 whitespace-nowrap">${statusHtml}</td>
                 `;
                 tbody.appendChild(tr);
             });
@@ -713,7 +835,11 @@ const tr = document.createElement('tr');
             startStatusPolling();
         }
 
-        document.addEventListener('DOMContentLoaded', loadInitialData);
+        document.addEventListener('DOMContentLoaded', () => {
+            const hamburger = document.getElementById('hamburger-btn');
+            if (hamburger) hamburger.addEventListener('click', toggleMobileMenu);
+            loadInitialData();
+        });
 
     </script>
 </body>
