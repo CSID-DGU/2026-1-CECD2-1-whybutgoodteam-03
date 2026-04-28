@@ -9,6 +9,28 @@
         body { font-family: 'Inter', 'Pretendard', sans-serif; }
         .tab-content { display: none; }
         .tab-content.active { display: block; }
+
+        /* 감지 사이클 펄스 애니메이션 */
+        .pulse-dot {
+            width: 18px; height: 18px; border-radius: 50%;
+            background: #9ca3af; /* gray when offline */
+            box-shadow: 0 0 0 0 rgba(156,163,175,0.7);
+            display: inline-block;
+        }
+        .pulse-dot.alive { background: #10b981; }
+        .pulse-dot.alive.beat { animation: pulse-beat 0.6s ease-out; }
+        .pulse-dot.fire { background: #ef4444; }
+        .pulse-dot.fire.beat { animation: pulse-fire 0.6s ease-out; }
+        @keyframes pulse-beat {
+            0% { box-shadow: 0 0 0 0 rgba(16,185,129,0.7); transform: scale(1); }
+            100% { box-shadow: 0 0 0 16px rgba(16,185,129,0); transform: scale(1.15); }
+        }
+        @keyframes pulse-fire {
+            0% { box-shadow: 0 0 0 0 rgba(239,68,68,0.7); transform: scale(1); }
+            100% { box-shadow: 0 0 0 20px rgba(239,68,68,0); transform: scale(1.25); }
+        }
+        .meter-bar { height: 8px; background: #e5e7eb; border-radius: 999px; overflow: hidden; }
+        .meter-fill { height: 100%; background: linear-gradient(90deg, #60a5fa, #6366f1); transition: width 0.3s; }
         .tab-btn {
             padding: 0.75rem 1.25rem;
             border-radius: 0.5rem;
@@ -72,9 +94,45 @@
                 </section>
                 
                 <section class="mt-8">
-                    <h2 class="text-2xl font-semibold mb-4 text-gray-800">시스템 정보</h2>
-                    <div class="bg-gray-50 p-6 rounded-lg border">
-                        <p class="text-gray-600">이곳에 시스템의 기본 정보 (IP, Uptime 등)를 표시할 수 있습니다.</p>
+                    <h2 class="text-2xl font-semibold mb-4 text-gray-800">감지기 실시간 상태</h2>
+                    <div class="bg-white p-6 rounded-lg border shadow-sm">
+                        <div class="flex items-center gap-4 mb-4">
+                            <span id="hb-dot" class="pulse-dot"></span>
+                            <div>
+                                <div id="hb-status-text" class="text-lg font-bold text-gray-700">감지기 상태 확인 중...</div>
+                                <div id="hb-cycle-text" class="text-sm text-gray-500">2초 주기 추론 사이클</div>
+                            </div>
+                            <div class="ml-auto text-right">
+                                <div class="text-xs text-gray-400">마지막 추론</div>
+                                <div id="hb-last-time" class="text-base font-semibold text-gray-700">—</div>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                            <div>
+                                <div class="text-gray-400 text-xs mb-1">단계</div>
+                                <div id="hb-stage" class="font-semibold text-gray-700">—</div>
+                            </div>
+                            <div>
+                                <div class="text-gray-400 text-xs mb-1">분류 결과</div>
+                                <div id="hb-label" class="font-semibold text-gray-700">—</div>
+                            </div>
+                            <div>
+                                <div class="text-gray-400 text-xs mb-1">분류 확신도</div>
+                                <div id="hb-prob" class="font-semibold text-gray-700">—</div>
+                            </div>
+                            <div>
+                                <div class="text-gray-400 text-xs mb-1">처리 시간</div>
+                                <div id="hb-elapsed" class="font-semibold text-gray-700">—</div>
+                            </div>
+                        </div>
+                        <div class="mt-4">
+                            <div class="flex justify-between text-xs text-gray-500 mb-1">
+                                <span>룰 프리필터 점수</span>
+                                <span id="hb-score-text">—</span>
+                            </div>
+                            <div class="meter-bar"><div id="hb-score-bar" class="meter-fill" style="width:0%"></div></div>
+                            <div class="text-xs text-gray-400 mt-1">기준: 0.07 이상 → 딥러닝 분류 진행</div>
+                        </div>
                     </div>
                 </section>
             </div>
@@ -157,10 +215,10 @@
                                 </div>
 
                                 <div class="bg-white p-4 rounded-lg shadow-sm border">
-                                    <h3 class="font-bold mb-3 text-lg text-gray-800">문자 발송 설정 (NHN Cloud)</h3>
-                                    <input type="text" id="nhn-app-key" placeholder="App Key" class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 mb-2">
-                                    <input type="password" id="nhn-secret-key" placeholder="Secret Key" class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 mb-2">
-                                    <input type="text" id="nhn-sender" placeholder="발신번호 (등록된 번호)" class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                    <h3 class="font-bold mb-3 text-lg text-gray-800">문자 발송 설정 (Solapi)</h3>
+                                    <input type="text" id="solapi-api-key" placeholder="API Key" class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 mb-2">
+                                    <input type="password" id="solapi-api-secret" placeholder="API Secret" class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 mb-2">
+                                    <input type="text" id="solapi-sender" placeholder="발신번호 (사전 등록된 번호)" class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
                                 </div>
 
                                 <div class="text-right">
@@ -359,7 +417,7 @@
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
                     <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${event.id}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${new Date(event.timestamp).toLocaleString()}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${fmtKST(event.timestamp)}</td>
                     <td class="px-6 py-4 whitespace-nowrap">
                         <span class="px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800">
                             ${event.event_type === 'fire_alarm_detected' ? '화재 감지' : event.event_type}
@@ -425,7 +483,7 @@ const tr = document.createElement('tr');
                 else if (log.status === 'pending') statusHtml = '<span class="px-2 py-1 rounded-full bg-yellow-100 text-yellow-800 text-xs font-semibold animate-pulse">전송 중...</span>';
                 
                 tr.innerHTML = `
-                    <td class="px-6 py-4 text-sm text-gray-500">${new Date(log.timestamp).toLocaleString()}</td>
+                    <td class="px-6 py-4 text-sm text-gray-500">${fmtKST(log.timestamp)}</td>
                     <td class="px-6 py-4 text-sm text-gray-500">${log.type.toUpperCase()}</td>
                     <td class="px-6 py-4 text-sm text-gray-900">${log.recipient_name}</td>
                     <td class="px-6 py-4 text-sm text-gray-600">${log.message}</td>
@@ -513,11 +571,17 @@ const tr = document.createElement('tr');
 
                 const settings = await apiFetch('/api/admin/settings');
                 if (settings) {
-                    document.getElementById('gmail-user').value = settings.gmail_user || '';
-                    document.getElementById('gmail-pw').value = settings.gmail_password || '';
-                    document.getElementById('nhn-app-key').value = settings.nhn_app_key || '';
-                    document.getElementById('nhn-secret-key').value = settings.nhn_secret_key || '';
-                    document.getElementById('nhn-sender').value = settings.nhn_sender_number || '';
+                    // 민감 정보는 항상 빈 칸으로 표시. 저장 여부는 placeholder로 안내.
+                    const setMark = (id, isSet) => {
+                        const el = document.getElementById(id);
+                        el.value = '';
+                        el.placeholder = isSet ? '✓ 저장됨 — 변경하려면 새 값 입력' : el.placeholder.replace(/^✓ 저장됨.*/, '');
+                    };
+                    setMark('gmail-user', settings.gmail_user_set);
+                    setMark('gmail-pw', settings.gmail_password_set);
+                    setMark('solapi-api-key', settings.solapi_api_key_set);
+                    setMark('solapi-api-secret', settings.solapi_api_secret_set);
+                    setMark('solapi-sender', settings.solapi_sender_number_set);
                 }
             } else {
                 alert("비밀번호가 일치하지 않습니다.");
@@ -530,9 +594,9 @@ const tr = document.createElement('tr');
                 new_password: document.getElementById('new-admin-pw').value,
                 gmail_user: document.getElementById('gmail-user').value,
                 gmail_password: document.getElementById('gmail-pw').value,
-                nhn_app_key: document.getElementById('nhn-app-key').value,
-                nhn_secret_key: document.getElementById('nhn-secret-key').value,
-                nhn_sender_number: document.getElementById('nhn-sender').value
+                solapi_api_key: document.getElementById('solapi-api-key').value,
+                solapi_api_secret: document.getElementById('solapi-api-secret').value,
+                solapi_sender_number: document.getElementById('solapi-sender').value
             };
             const result = await apiFetch('/api/admin/settings', {
                 method: 'POST',
@@ -547,10 +611,90 @@ const tr = document.createElement('tr');
             }
         });
 
+        // --- 감지기 하트비트 폴링 ---
+        let lastHbTimestamp = null;
+        function parseLogTimestamp(ts) {
+            // DB/CSV의 timestamp는 KST 기준 문자열 ("2026-04-28 17:27:04")
+            return new Date(ts.replace(' ', 'T') + '+09:00');
+        }
+        // DB timestamp(KST 문자열)를 항상 KST로 표시 — 브라우저 타임존과 무관하게
+        function fmtKST(ts) {
+            if (!ts) return '';
+            const d = new Date(ts.replace(' ', 'T') + '+09:00');
+            return d.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', hour12: false });
+        }
+        function fmtAgo(secondsAgo) {
+            if (secondsAgo < 2) return '방금 전';
+            if (secondsAgo < 60) return Math.floor(secondsAgo) + '초 전';
+            if (secondsAgo < 3600) return Math.floor(secondsAgo / 60) + '분 전';
+            return Math.floor(secondsAgo / 3600) + '시간 전';
+        }
+        function labelBadge(label, isFire) {
+            if (isFire) return `<span class="px-2 py-0.5 rounded text-white bg-red-500">${label}</span>`;
+            if (label === 'RULE_FILTERED') return `<span class="px-2 py-0.5 rounded bg-gray-200 text-gray-600">필터됨</span>`;
+            if (label === 'emergency') return `<span class="px-2 py-0.5 rounded bg-orange-200 text-orange-800">${label}</span>`;
+            return `<span class="px-2 py-0.5 rounded bg-blue-100 text-blue-700">${label || '—'}</span>`;
+        }
+        async function pollHeartbeat() {
+            try {
+                const r = await fetch('/api/heartbeat', { cache: 'no-store' });
+                const hb = await r.json();
+                const dot = document.getElementById('hb-dot');
+                const statusText = document.getElementById('hb-status-text');
+
+                if (!hb.alive) {
+                    dot.className = 'pulse-dot';
+                    statusText.textContent = '감지기 정지됨';
+                    statusText.className = 'text-lg font-bold text-gray-500';
+                    return;
+                }
+
+                const lastDate = parseLogTimestamp(hb.timestamp);
+                const ageSec = (Date.now() - lastDate.getTime()) / 1000;
+                const isStale = ageSec > 10; // 10초 이상이면 정지로 간주
+                const isNew = hb.timestamp !== lastHbTimestamp;
+                lastHbTimestamp = hb.timestamp;
+
+                // 상태 점
+                if (isStale) {
+                    dot.className = 'pulse-dot';
+                    statusText.textContent = '감지기 응답 지연';
+                    statusText.className = 'text-lg font-bold text-yellow-600';
+                } else if (hb.is_fire) {
+                    dot.className = 'pulse-dot fire' + (isNew ? ' beat' : '');
+                    statusText.textContent = '🔥 화재 감지!';
+                    statusText.className = 'text-lg font-bold text-red-600';
+                } else {
+                    dot.className = 'pulse-dot alive' + (isNew ? ' beat' : '');
+                    statusText.textContent = '감지기 정상 동작 중';
+                    statusText.className = 'text-lg font-bold text-emerald-600';
+                }
+
+                document.getElementById('hb-last-time').textContent =
+                    fmtAgo(ageSec) + ' (' + hb.timestamp.split(' ')[1] + ')';
+                document.getElementById('hb-stage').textContent =
+                    hb.stage === 'passed' ? '✓ 분류 완료' : hb.stage === 'rule_filtered' ? '◌ 룰 필터됨' : hb.stage;
+                document.getElementById('hb-label').innerHTML = labelBadge(hb.pred_label, hb.is_fire);
+                document.getElementById('hb-prob').textContent =
+                    hb.pred_prob != null ? (hb.pred_prob * 100).toFixed(1) + '%' : '—';
+                document.getElementById('hb-elapsed').textContent =
+                    hb.elapsed != null ? hb.elapsed.toFixed(2) + 's' : '—';
+
+                const score = hb.rule_score || 0;
+                const pct = Math.min(100, score * 100 * 5); // 0.2 → 100%
+                document.getElementById('hb-score-bar').style.width = pct + '%';
+                document.getElementById('hb-score-text').textContent = score.toFixed(4);
+            } catch (e) {
+                console.warn('heartbeat err', e);
+            }
+        }
+
         // --- 초기화 로직 ---
         function startStatusPolling() {
-            pollStatus(); 
+            pollStatus();
             pollingInterval = setInterval(pollStatus, 3000);
+            pollHeartbeat();
+            setInterval(pollHeartbeat, 1000);
         }
 
         async function pollStatus() {

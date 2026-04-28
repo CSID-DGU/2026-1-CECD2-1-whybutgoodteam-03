@@ -6,7 +6,7 @@ DATABASE = 'gard-ear.db'
 def create_tables():
     """
     모든 테이블을 생성합니다.
-    v6 변경 사항: SystemSettings에 admin_password + 발신자(Gmail/NHN) 설정 컬럼 추가
+    v6 변경 사항: SystemSettings에 admin_password + 발신자(Gmail/Solapi) 설정 컬럼 추가
     """
     if os.path.exists(DATABASE):
         print(f"기존 {DATABASE} 파일을 삭제합니다.")
@@ -32,7 +32,7 @@ def create_tables():
         device_id TEXT NOT NULL,
         event_type TEXT NOT NULL,
         location TEXT,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        timestamp DATETIME DEFAULT (datetime('now','localtime'))
     )
     ''')
 
@@ -56,7 +56,7 @@ def create_tables():
         status TEXT NOT NULL CHECK(status IN ('success', 'failed', 'pending')),
         message TEXT,
         error_message TEXT,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        timestamp DATETIME DEFAULT (datetime('now','localtime'))
     )
     ''')
 
@@ -68,9 +68,9 @@ def create_tables():
         admin_password TEXT DEFAULT '1234',
         gmail_user TEXT DEFAULT '',
         gmail_password TEXT DEFAULT '',
-        nhn_app_key TEXT DEFAULT '',
-        nhn_secret_key TEXT DEFAULT '',
-        nhn_sender_number TEXT DEFAULT ''
+        solapi_api_key TEXT DEFAULT '',
+        solapi_api_secret TEXT DEFAULT '',
+        solapi_sender_number TEXT DEFAULT ''
     )
     ''')
     c.execute("INSERT INTO SystemSettings (id) VALUES (1)")

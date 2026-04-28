@@ -2,9 +2,12 @@ import sqlite3
 import os
 import atexit
 import threading
+import csv
 from flask import Flask, jsonify, request, render_template, g
 from flask_cors import CORS
 from notifications import send_notification_task
+
+DETECTION_LOG = 'logs/detection_log.csv'
 
 DATABASE = 'gard-ear.db'
 DEVICE_ID = 'rasp_pi_main'
@@ -70,20 +73,34 @@ def admin_settings():
         # 비밀번호 변경 요청이 있으면 변경, 없으면 기존 유지
         if d.get('new_password'):
             execute_db("UPDATE SystemSettings SET admin_password = ? WHERE id = 1", [d['new_password']])
-            
-        # 발신자 정보 업데이트
-        execute_db("""
-            UPDATE SystemSettings 
-            SET gmail_user=?, gmail_password=?, 
-                nhn_app_key=?, nhn_secret_key=?, nhn_sender_number=?
-            WHERE id=1
-        """, [d['gmail_user'], d['gmail_password'], d['nhn_app_key'], d['nhn_secret_key'], d['nhn_sender_number']])
-        
+
+        # 발신자 정보 업데이트: 빈 문자열이면 기존 값 유지, 값이 있으면 덮어쓰기
+        for field in ('gmail_user', 'gmail_password',
+                      'solapi_api_key', 'solapi_api_secret', 'solapi_sender_number'):
+            value = d.get(field)
+            if value:
+                execute_db(f"UPDATE SystemSettings SET {field} = ? WHERE id = 1", [value])
+
         return jsonify({'success': True})
 
-    # GET 요청: 현재 설정값 반환 (보안상 비밀번호는 마스킹하거나 빈값으로 줄 수도 있음)
+    # GET 요청: 민감 정보는 빈 값으로 마스킹, *_set 플래그로 저장 여부만 노출
     row = query_db("SELECT * FROM SystemSettings WHERE id = 1", one=True)
-    return jsonify(row)
+    if row:
+        masked = {
+            'location': row.get('location', ''),
+            'gmail_user': '',
+            'gmail_password': '',
+            'solapi_api_key': '',
+            'solapi_api_secret': '',
+            'solapi_sender_number': '',
+            'gmail_user_set': bool(row.get('gmail_user')),
+            'gmail_password_set': bool(row.get('gmail_password')),
+            'solapi_api_key_set': bool(row.get('solapi_api_key')),
+            'solapi_api_secret_set': bool(row.get('solapi_api_secret')),
+            'solapi_sender_number_set': bool(row.get('solapi_sender_number')),
+        }
+        return jsonify(masked)
+    return jsonify({})
 
 # --- 기존 API ---
 @app.route('/api/status', methods=['GET'])
@@ -99,6 +116,37 @@ def get_status():
         'status': status_data.get('status', 'normal'),
         'location': settings_data.get('location', '미설정')
     })
+
+@app.route('/api/heartbeat', methods=['GET'])
+def heartbeat():
+    """감지기의 마지막 추론 한 줄 + 최근 사이클 시간 정보"""
+    try:
+        with open(DETECTION_LOG, 'rb') as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            block = 4096
+            f.seek(max(0, size - block))
+            tail = f.read().decode('utf-8', errors='replace').splitlines()
+        if not tail:
+            return jsonify({'alive': False})
+        last = tail[-1]
+        # CSV 파싱
+        reader = csv.reader([last])
+        row = next(reader)
+        if len(row) < 9:
+            return jsonify({'alive': False})
+        return jsonify({
+            'alive': True,
+            'timestamp': row[0],
+            'stage': row[2],
+            'rule_score': float(row[3]) if row[3] else None,
+            'pred_label': row[4],
+            'pred_prob': float(row[5]) if row[5] else None,
+            'is_fire': row[6] == '1',
+            'elapsed': float(row[8]) if row[8] else None,
+        })
+    except Exception as e:
+        return jsonify({'alive': False, 'error': str(e)})
 
 @app.route('/api/events', methods=['POST'])
 def create_event():

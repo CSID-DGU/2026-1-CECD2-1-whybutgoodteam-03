@@ -1,7 +1,11 @@
 # --- 민감 데이터 (절대 커밋 금지) ---
 gard-ear.db
 *.db
+*.db.bak.*
+*.sqlite
+*.sqlite3
 .env
+.env.*
 
 # --- 녹음/로그 (프라이버시 + 용량) ---
 records/
@@ -37,3 +41,12 @@ Thumbs.db
 
 # --- 결과물 ---
 result/
+benchmark_*_result.json
+benchmark_result.json
+
+# --- 훈련/평가 데이터셋 ---
+aihub_test/
+
+# --- 일회성 스크립트 / stray ---
+migrate_*.py
+/python

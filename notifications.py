@@ -1,21 +1,33 @@
-import os
 import smtplib
 import requests
 import sqlite3
 import time
+import hmac
+import hashlib
+import secrets
+from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-# --- 환경 변수 로드 ---
-GMAIL_USER = os.environ.get('GMAIL_USER')
-GMAIL_APP_PASSWORD = os.environ.get('GMAIL_APP_PASSWORD')
-
-NHN_APP_KEY = os.environ.get('NHN_APP_KEY')
-NHN_SECRET_KEY = os.environ.get('NHN_SECRET_KEY')
-NHN_SENDER_NUMBER = os.environ.get('NHN_SENDER_NUMBER')
+SOLAPI_ENDPOINT = "https://api.solapi.com/messages/v4/send"
 
 # --- DB 연결 ---
 DATABASE = 'gard-ear.db'
+
+def load_sender_settings():
+    """SystemSettings에서 Gmail/Solapi 발신자 설정을 읽어옵니다."""
+    try:
+        conn = sqlite3.connect(DATABASE)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT gmail_user, gmail_password, solapi_api_key, solapi_api_secret, solapi_sender_number "
+            "FROM SystemSettings WHERE id = 1"
+        ).fetchone()
+        conn.close()
+        return dict(row) if row else {}
+    except sqlite3.Error as e:
+        print(f"!!! 발신자 설정 로드 실패: {e}")
+        return {}
 
 def log_notification_start(recipient_name, type, message):
     """
@@ -56,61 +68,83 @@ def update_notification_result(log_id, status, error_message=None):
 
 
 # --- 이메일 발송 (Gmail) ---
-def send_email(recipient_name, recipient_email, message_body, log_id):
+def send_email(recipient_name, recipient_email, message_body, log_id, settings=None):
     """
-    Gmail 발송 후 결과를 DB에 업데이트합니다.
+    Gmail 발송 후 결과를 DB에 업데이트합니다. 설정은 SystemSettings(DB)에서 로드.
     """
-    if not GMAIL_USER or not GMAIL_APP_PASSWORD:
-        update_notification_result(log_id, 'failed', "GMAIL 환경 변수 미설정")
+    if settings is None:
+        settings = load_sender_settings()
+    gmail_user = settings.get('gmail_user')
+    gmail_password = settings.get('gmail_password')
+
+    if not gmail_user or not gmail_password:
+        update_notification_result(log_id, 'failed', "Gmail 발신자 설정 미입력 (관리자 설정에서 등록 필요)")
         return
 
     try:
         msg = MIMEMultipart()
-        msg['From'] = GMAIL_USER
+        msg['From'] = gmail_user
         msg['To'] = recipient_email
         msg['Subject'] = "[긴급] 가드이어 화재 경보"
         msg.attach(MIMEText(message_body, 'plain'))
-        
+
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
-        server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
+        server.login(gmail_user, gmail_password)
         server.send_message(msg)
         server.quit()
-        
+
         update_notification_result(log_id, 'success')
 
     except Exception as e:
         update_notification_result(log_id, 'failed', str(e))
 
-# --- SMS 발송 (NHN Cloud) ---
-def send_sms(recipient_name, recipient_phone, message_body, log_id):
+# --- SMS 발송 (Solapi) ---
+def _solapi_auth_header(api_key, api_secret):
+    date = datetime.now(timezone.utc).isoformat()
+    salt = secrets.token_hex(32)
+    signature = hmac.new(
+        api_secret.encode('utf-8'),
+        (date + salt).encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+    return f"HMAC-SHA256 apiKey={api_key}, date={date}, salt={salt}, signature={signature}"
+
+def send_sms(recipient_name, recipient_phone, message_body, log_id, settings=None):
     """
-    SMS 발송 후 결과를 DB에 업데이트합니다.
+    Solapi로 SMS 발송 후 결과를 DB에 업데이트합니다. 설정은 SystemSettings(DB)에서 로드.
     """
-    if not NHN_APP_KEY or not NHN_SECRET_KEY or not NHN_SENDER_NUMBER:
-        update_notification_result(log_id, 'failed', "NHN Cloud 환경 변수 미설정")
+    if settings is None:
+        settings = load_sender_settings()
+    api_key = settings.get('solapi_api_key')
+    api_secret = settings.get('solapi_api_secret')
+    sender_number = settings.get('solapi_sender_number')
+
+    if not api_key or not api_secret or not sender_number:
+        update_notification_result(log_id, 'failed', "Solapi 발신자 설정 미입력 (관리자 설정에서 등록 필요)")
         return
 
-    url = f"https://api-sms.cloud.toast.com/sms/v3.0/appKeys/{NHN_APP_KEY}/sender/sms"
     headers = {
-        'Content-Type': 'application/json;charset=UTF-8',
-        'X-Secret-Key': NHN_SECRET_KEY
+        'Authorization': _solapi_auth_header(api_key, api_secret),
+        'Content-Type': 'application/json;charset=UTF-8'
     }
     data = {
-        "body": message_body,
-        "sendNo": NHN_SENDER_NUMBER,
-        "recipientList": [{"recipientNo": recipient_phone}]
+        "message": {
+            "to": recipient_phone,
+            "from": sender_number,
+            "text": message_body
+        }
     }
 
     try:
-        response = requests.post(url, headers=headers, json=data)
-        response.raise_for_status()
-        
+        response = requests.post(SOLAPI_ENDPOINT, headers=headers, json=data, timeout=10)
         result = response.json()
-        if result.get("header", {}).get("isSuccessful", False):
+
+        # Solapi 성공 statusCode: "2000" (요청 접수 성공)
+        if response.ok and result.get("statusCode", "").startswith("2"):
             update_notification_result(log_id, 'success')
         else:
-            error_msg = result.get("header", {}).get("resultMessage", "Unknown NHN Error")
+            error_msg = result.get("statusMessage") or result.get("errorMessage") or f"HTTP {response.status_code}"
             update_notification_result(log_id, 'failed', error_msg)
 
     except Exception as e:
@@ -142,21 +176,21 @@ def send_notification_task(location):
         print("[알림 작업] 발송할 연락처 없음")
         return
 
+    sender_settings = load_sender_settings()
+
     for contact in contacts:
         name = contact['name']
         phone = contact.get('phone')
         email = contact.get('email')
-        
+
         # 1. SMS 발송 프로세스
         if phone:
-            # (A) 대기 상태로 먼저 기록
             log_id = log_notification_start(name, 'sms', message)
-            # (B) 실제 발송 (내부에서 성공/실패 업데이트)
-            send_sms(name, phone, message, log_id)
-        
+            send_sms(name, phone, message, log_id, settings=sender_settings)
+
         # 2. 이메일 발송 프로세스
         if email:
             log_id = log_notification_start(name, 'email', message)
-            send_email(name, email, message, log_id)
+            send_email(name, email, message, log_id, settings=sender_settings)
             
     print("[알림 작업 완료]")
