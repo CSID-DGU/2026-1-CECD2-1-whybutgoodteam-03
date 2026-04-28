@@ -208,6 +208,41 @@
                         </div>
                     </div>
                 </section>
+
+                <section class="mt-8">
+                    <h2 class="text-xl sm:text-2xl font-semibold mb-4 text-gray-800">시스템 상태</h2>
+                    <div class="bg-white p-4 sm:p-6 rounded-lg border shadow-sm">
+                        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                            <div>
+                                <div class="text-gray-400 text-xs mb-1">CPU 온도</div>
+                                <div id="sh-temp" class="text-2xl font-bold text-gray-700">—</div>
+                                <div class="meter-bar mt-1"><div id="sh-temp-bar" class="meter-fill" style="width:0%"></div></div>
+                            </div>
+                            <div>
+                                <div class="text-gray-400 text-xs mb-1">CPU 사용률</div>
+                                <div id="sh-cpu" class="text-2xl font-bold text-gray-700">—</div>
+                                <div class="meter-bar mt-1"><div id="sh-cpu-bar" class="meter-fill" style="width:0%"></div></div>
+                            </div>
+                            <div>
+                                <div class="text-gray-400 text-xs mb-1">메모리</div>
+                                <div id="sh-mem" class="text-2xl font-bold text-gray-700">—</div>
+                                <div class="meter-bar mt-1"><div id="sh-mem-bar" class="meter-fill" style="width:0%"></div></div>
+                            </div>
+                            <div>
+                                <div class="text-gray-400 text-xs mb-1">디스크</div>
+                                <div id="sh-disk" class="text-2xl font-bold text-gray-700">—</div>
+                                <div class="meter-bar mt-1"><div id="sh-disk-bar" class="meter-fill" style="width:0%"></div></div>
+                            </div>
+                        </div>
+                        <div class="mt-4 flex flex-wrap items-center gap-2 text-xs">
+                            <span class="text-gray-400">Throttle:</span>
+                            <span id="sh-throttle" class="px-2 py-0.5 rounded bg-gray-100 text-gray-600">—</span>
+                            <span class="text-gray-400 ml-2">Load avg(1m):</span>
+                            <span id="sh-load" class="font-mono text-gray-700">—</span>
+                            <span id="sh-host-note" class="ml-auto text-gray-400">— 임계 75°C 3분 지속 시 SMS 알림</span>
+                        </div>
+                    </div>
+                </section>
             </div>
 
             <!-- 2. 이벤트 내역 탭 -->
@@ -300,6 +335,30 @@
                                     </button>
                                 </div>
                                 <p id="admin-save-status" class="mt-2 text-sm text-green-600"></p>
+                            </form>
+
+                            <form id="manual-sms-form" class="space-y-4">
+                                <div class="bg-white p-4 rounded-lg shadow-sm border">
+                                    <h3 class="font-bold mb-3 text-lg text-gray-800">관리자 문자 발송</h3>
+                                    <div class="text-sm mb-3">
+                                        발신번호:
+                                        <span id="manual-sms-sender" class="text-gray-400">— (Solapi 발신번호 미설정)</span>
+                                    </div>
+                                    <textarea id="manual-sms-message" rows="4" placeholder="발송할 문자 내용을 입력하세요" class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 mb-3"></textarea>
+                                    <div class="flex items-center justify-between mb-2">
+                                        <span class="text-sm font-medium text-gray-700">수신자 (전화번호 등록된 연락처만)</span>
+                                        <button type="button" id="manual-sms-toggle-all" class="text-xs text-blue-600 hover:underline">전체 선택/해제</button>
+                                    </div>
+                                    <div id="manual-sms-recipients" class="border rounded-lg p-3 max-h-40 overflow-auto space-y-1 bg-gray-50 mb-3">
+                                        <!-- JS로 채워짐 -->
+                                    </div>
+                                    <div class="text-right">
+                                        <button type="submit" id="manual-sms-send-btn" class="w-full sm:w-auto px-6 py-3 bg-pink-600 text-white font-bold rounded-lg hover:bg-pink-700 focus:outline-none focus:ring-2 focus:ring-pink-500 disabled:opacity-60 disabled:cursor-not-allowed">
+                                            문자 발송
+                                        </button>
+                                    </div>
+                                    <p id="manual-sms-status" class="mt-2 text-sm"></p>
+                                </div>
                             </form>
                         </div>
                     </div>
@@ -585,6 +644,9 @@
             if (settings) {
                 document.getElementById('system-location').value = settings.location || '';
             }
+
+            // 3. 관리자 수동 발송 수신자 목록 갱신 (관리자 패널이 숨김이어도 무해)
+            loadManualSmsRecipients();
         }
 
         async function loadLogsData() {
@@ -704,7 +766,9 @@
                     setMark('solapi-api-key', settings.solapi_api_key_set);
                     setMark('solapi-api-secret', settings.solapi_api_secret_set);
                     setMark('solapi-sender', settings.solapi_sender_number_set);
+                    updateManualSmsSender(settings.solapi_sender_number_preview);
                 }
+                loadManualSmsRecipients();
             } else {
                 alert("비밀번호가 일치하지 않습니다.");
             }
@@ -730,6 +794,104 @@
                 statusEl.textContent = '발신자 정보가 저장되었습니다.';
                 document.getElementById('new-admin-pw').value = '';
                 setTimeout(() => { statusEl.textContent = ''; }, 3000);
+
+                const refreshed = await apiFetch('/api/admin/settings');
+                if (refreshed) updateManualSmsSender(refreshed.solapi_sender_number_preview);
+            }
+        });
+
+        // --- 관리자 수동 문자 발송 ---
+        function updateManualSmsSender(value) {
+            const el = document.getElementById('manual-sms-sender');
+            if (!el) return;
+            if (value) {
+                el.textContent = value;
+                el.className = 'font-mono text-gray-800';
+            } else {
+                el.textContent = '— (Solapi 발신번호 미설정)';
+                el.className = 'text-gray-400';
+            }
+        }
+
+        async function loadManualSmsRecipients() {
+            const div = document.getElementById('manual-sms-recipients');
+            if (!div) return;
+            const contacts = await fetchContacts();
+            const phoneContacts = (contacts || []).filter(c => c.phone);
+            if (phoneContacts.length === 0) {
+                div.innerHTML = '<p class="text-sm text-gray-500">전화번호가 등록된 연락처가 없습니다.</p>';
+                return;
+            }
+            div.innerHTML = phoneContacts.map(c => `
+                <label class="flex items-center gap-2 text-sm">
+                    <input type="checkbox" class="manual-sms-recipient-cb" value="${c.id}" checked>
+                    <span class="font-semibold">${c.name}</span>
+                    <span class="text-gray-500">${c.phone}</span>
+                    ${c.is_active ? '' : '<span class="text-xs text-gray-400">(비활성)</span>'}
+                </label>
+            `).join('');
+        }
+
+        document.getElementById('manual-sms-toggle-all').addEventListener('click', () => {
+            const cbs = document.querySelectorAll('.manual-sms-recipient-cb');
+            const allChecked = cbs.length > 0 && Array.from(cbs).every(cb => cb.checked);
+            cbs.forEach(cb => cb.checked = !allChecked);
+        });
+
+        document.getElementById('manual-sms-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const statusEl = document.getElementById('manual-sms-status');
+            const btn = document.getElementById('manual-sms-send-btn');
+            const message = document.getElementById('manual-sms-message').value.trim();
+            const recipient_ids = Array.from(document.querySelectorAll('.manual-sms-recipient-cb:checked'))
+                .map(cb => parseInt(cb.value, 10));
+
+            if (!message) {
+                statusEl.textContent = '본문을 입력하세요.';
+                statusEl.className = 'mt-2 text-sm text-red-600';
+                return;
+            }
+            if (recipient_ids.length === 0) {
+                statusEl.textContent = '수신자를 1명 이상 선택하세요.';
+                statusEl.className = 'mt-2 text-sm text-red-600';
+                return;
+            }
+
+            const senderText = document.getElementById('manual-sms-sender').textContent;
+            const preview = message.length > 200 ? message.slice(0, 200) + '…' : message;
+            const ok = confirm(
+                `수신자 ${recipient_ids.length}명에게 SMS를 발송합니다.\n` +
+                `발신번호: ${senderText}\n\n` +
+                `본문:\n${preview}\n\n` +
+                `계속하시겠습니까?`
+            );
+            if (!ok) return;
+
+            const originalLabel = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = '발송 중...';
+            statusEl.textContent = '발송 중...';
+            statusEl.className = 'mt-2 text-sm text-gray-600';
+
+            try {
+                const result = await apiFetch('/api/admin/send-sms', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message, recipient_ids })
+                });
+
+                if (result && result.success) {
+                    statusEl.textContent = `${result.queued}명에게 발송 요청됨. 결과는 발송 내역 탭에서 확인하세요.`;
+                    statusEl.className = 'mt-2 text-sm text-green-600';
+                    document.getElementById('manual-sms-message').value = '';
+                    loadLogsData();
+                } else {
+                    statusEl.textContent = '발송 실패' + (result && result.error ? ': ' + result.error : '');
+                    statusEl.className = 'mt-2 text-sm text-red-600';
+                }
+            } finally {
+                btn.disabled = false;
+                btn.textContent = originalLabel;
             }
         });
 
@@ -743,7 +905,7 @@
         function fmtKST(ts) {
             if (!ts) return '';
             const d = new Date(ts.replace(' ', 'T') + '+09:00');
-            return d.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', hour12: false });
+            return d.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', hour12: true });
         }
         function fmtAgo(secondsAgo) {
             if (secondsAgo < 2) return '방금 전';
@@ -792,8 +954,9 @@
                     statusText.className = 'text-lg font-bold text-emerald-600';
                 }
 
+                const hbTimeStr = lastDate.toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul', hour12: true });
                 document.getElementById('hb-last-time').textContent =
-                    fmtAgo(ageSec) + ' (' + hb.timestamp.split(' ')[1] + ')';
+                    fmtAgo(ageSec) + ' (' + hbTimeStr + ')';
                 document.getElementById('hb-stage').textContent =
                     hb.stage === 'passed' ? '✓ 분류 완료' : hb.stage === 'rule_filtered' ? '◌ 룰 필터됨' : hb.stage;
                 document.getElementById('hb-label').innerHTML = labelBadge(hb.pred_label, hb.is_fire);
@@ -811,12 +974,109 @@
             }
         }
 
+        // --- 시스템 상태 폴링 ---
+        function tempLevel(t) {
+            if (t == null) return 'gray';
+            if (t < 60) return 'green';
+            if (t < 75) return 'yellow';
+            return 'red';
+        }
+        function pctLevel(p) {
+            if (p == null) return 'gray';
+            if (p < 70) return 'green';
+            if (p < 90) return 'yellow';
+            return 'red';
+        }
+        function applyLevel(textEl, barEl, level) {
+            const map = {
+                green:  { text: 'text-emerald-600', bar: '#10b981' },
+                yellow: { text: 'text-yellow-600',  bar: '#eab308' },
+                red:    { text: 'text-red-600',     bar: '#ef4444' },
+                gray:   { text: 'text-gray-500',    bar: '#9ca3af' },
+            }[level];
+            if (textEl) textEl.className = textEl.className.replace(/text-(emerald|yellow|red|gray)-\d+/g, '') + ' ' + map.text;
+            if (barEl) barEl.style.background = map.bar;
+        }
+        function describeThrottle(th) {
+            if (!th) return { label: '— (RPi 아님)', cls: 'bg-gray-100 text-gray-500' };
+            if (th.under_voltage_now) return { label: '저전압 발생 중', cls: 'bg-red-100 text-red-800' };
+            if (th.throttled_now)     return { label: '스로틀 진행 중', cls: 'bg-red-100 text-red-800' };
+            if (th.soft_temp_limit_now) return { label: '소프트 온도 제한', cls: 'bg-orange-100 text-orange-800' };
+            if (th.freq_capped_now)   return { label: '주파수 캡', cls: 'bg-yellow-100 text-yellow-800' };
+            const occurred = th.under_voltage_occurred || th.throttled_occurred || th.soft_temp_limit_occurred || th.freq_capped_occurred;
+            if (occurred) return { label: '과거 발생 이력 있음', cls: 'bg-yellow-50 text-yellow-700' };
+            return { label: '정상', cls: 'bg-green-100 text-green-800' };
+        }
+        async function pollHealth() {
+            try {
+                const r = await fetch('/api/health', { cache: 'no-store' });
+                if (!r.ok) return;
+                const h = await r.json();
+
+                const tempEl = document.getElementById('sh-temp');
+                const tempBar = document.getElementById('sh-temp-bar');
+                if (h.cpu_temp_c != null) {
+                    tempEl.textContent = h.cpu_temp_c.toFixed(1) + '°C';
+                    tempBar.style.width = Math.min(100, (h.cpu_temp_c / 90) * 100) + '%';
+                } else {
+                    tempEl.textContent = '— (호스트 미지원)';
+                    tempBar.style.width = '0%';
+                }
+                applyLevel(tempEl, tempBar, tempLevel(h.cpu_temp_c));
+
+                const cpuEl = document.getElementById('sh-cpu');
+                const cpuBar = document.getElementById('sh-cpu-bar');
+                if (h.cpu_percent != null) {
+                    cpuEl.textContent = h.cpu_percent.toFixed(0) + '%';
+                    cpuBar.style.width = Math.min(100, h.cpu_percent) + '%';
+                } else {
+                    cpuEl.textContent = '—';
+                    cpuBar.style.width = '0%';
+                }
+                applyLevel(cpuEl, cpuBar, pctLevel(h.cpu_percent));
+
+                const memEl = document.getElementById('sh-mem');
+                const memBar = document.getElementById('sh-mem-bar');
+                if (h.memory_percent != null) {
+                    memEl.textContent = h.memory_percent.toFixed(0) + '%';
+                    memBar.style.width = Math.min(100, h.memory_percent) + '%';
+                } else {
+                    memEl.textContent = '—';
+                    memBar.style.width = '0%';
+                }
+                applyLevel(memEl, memBar, pctLevel(h.memory_percent));
+
+                const diskEl = document.getElementById('sh-disk');
+                const diskBar = document.getElementById('sh-disk-bar');
+                if (h.disk_percent != null) {
+                    diskEl.textContent = h.disk_percent.toFixed(0) + '%';
+                    diskBar.style.width = Math.min(100, h.disk_percent) + '%';
+                } else {
+                    diskEl.textContent = '—';
+                    diskBar.style.width = '0%';
+                }
+                applyLevel(diskEl, diskBar, pctLevel(h.disk_percent));
+
+                const thr = describeThrottle(h.throttled);
+                const thrEl = document.getElementById('sh-throttle');
+                thrEl.textContent = thr.label;
+                thrEl.className = 'px-2 py-0.5 rounded ' + thr.cls;
+
+                const loadEl = document.getElementById('sh-load');
+                loadEl.textContent = h.load_avg_1m != null ? h.load_avg_1m.toFixed(2) : '—';
+            } catch (e) {
+                console.warn('health err', e);
+            }
+        }
+
         // --- 초기화 로직 ---
         function startStatusPolling() {
             pollStatus();
             pollingInterval = setInterval(pollStatus, 3000);
             pollHeartbeat();
             setInterval(pollHeartbeat, 1000);
+            pollHealth();
+            setInterval(pollHealth, 5000);
         }
 
         async function pollStatus() {

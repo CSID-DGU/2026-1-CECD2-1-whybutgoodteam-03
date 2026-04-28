@@ -157,7 +157,9 @@ def send_notification_task(location):
     
     now = time.localtime()
     date_str = time.strftime('%Y-%m-%d', now)
-    time_str = time.strftime('%H:%M:%S', now)
+    ampm = '오전' if now.tm_hour < 12 else '오후'
+    hour12 = now.tm_hour % 12 or 12
+    time_str = f"{ampm} {hour12}:{now.tm_min:02d}:{now.tm_sec:02d}"
     message = f"[{date_str}, {location}, {time_str}] 화재 경보가 감지되었습니다. 즉시 확인하세요."
     
     try:
@@ -192,5 +194,42 @@ def send_notification_task(location):
         if email:
             log_id = log_notification_start(name, 'email', message)
             send_email(name, email, message, log_id, settings=sender_settings)
-            
+
     print("[알림 작업 완료]")
+
+
+def send_manual_sms_task(message, recipient_ids=None):
+    """관리자 수동 SMS 발송. recipient_ids가 None/빈 값이면 활성 연락처 전원에게."""
+    print(f"[수동 SMS 작업 시작] 수신자 ID: {recipient_ids}")
+    try:
+        conn = sqlite3.connect(DATABASE)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        if recipient_ids:
+            placeholders = ','.join('?' * len(recipient_ids))
+            cur.execute(
+                f"SELECT * FROM NotificationContacts "
+                f"WHERE id IN ({placeholders}) AND phone IS NOT NULL AND phone != ''",
+                list(recipient_ids)
+            )
+        else:
+            cur.execute(
+                "SELECT * FROM NotificationContacts "
+                "WHERE is_active = 1 AND phone IS NOT NULL AND phone != ''"
+            )
+        contacts = [dict(row) for row in cur.fetchall()]
+        cur.close()
+        conn.close()
+    except sqlite3.Error as e:
+        print(f"!!! 수동 SMS 작업 실패: {e}")
+        return
+
+    if not contacts:
+        print("[수동 SMS 작업] 발송 대상 없음")
+        return
+
+    sender_settings = load_sender_settings()
+    for c in contacts:
+        log_id = log_notification_start(c['name'], 'sms', message)
+        send_sms(c['name'], c['phone'], message, log_id, settings=sender_settings)
+    print("[수동 SMS 작업 완료]")

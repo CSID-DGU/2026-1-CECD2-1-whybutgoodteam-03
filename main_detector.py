@@ -16,7 +16,7 @@ import csv
 from datetime import datetime
 
 # --- 설정 ---
-SERVER_URL = "http://127.0.0.1:5000/api/events"
+SERVER_URL = os.environ.get("SERVER_URL", "http://127.0.0.1:5000/api/events")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 RECORD_DIR = os.path.join(BASE_DIR, "records")

@@ -2,10 +2,12 @@ import sqlite3
 import os
 import atexit
 import threading
+import time
 import csv
 from flask import Flask, jsonify, request, render_template, g
 from flask_cors import CORS
-from notifications import send_notification_task
+from notifications import send_notification_task, send_manual_sms_task
+from health import get_health
 
 DETECTION_LOG = 'logs/detection_log.csv'
 
@@ -93,6 +95,7 @@ def admin_settings():
             'solapi_api_key': '',
             'solapi_api_secret': '',
             'solapi_sender_number': '',
+            'solapi_sender_number_preview': row.get('solapi_sender_number') or '',
             'gmail_user_set': bool(row.get('gmail_user')),
             'gmail_password_set': bool(row.get('gmail_password')),
             'solapi_api_key_set': bool(row.get('solapi_api_key')),
@@ -101,6 +104,47 @@ def admin_settings():
         }
         return jsonify(masked)
     return jsonify({})
+
+@app.route('/api/admin/send-sms', methods=['POST'])
+def admin_send_sms():
+    """관리자 수동 문자 발송. 본문 + 수신자 ID 리스트(없으면 활성 연락처 전원)."""
+    d = request.json or {}
+    message = (d.get('message') or '').strip()
+    raw_ids = d.get('recipient_ids')
+
+    if not message:
+        return jsonify({'success': False, 'error': '본문이 비어 있습니다.'}), 400
+
+    recipient_ids = []
+    if isinstance(raw_ids, list):
+        for x in raw_ids:
+            try:
+                recipient_ids.append(int(x))
+            except (TypeError, ValueError):
+                continue
+
+    if recipient_ids:
+        placeholders = ','.join('?' * len(recipient_ids))
+        rows = query_db(
+            f"SELECT id FROM NotificationContacts "
+            f"WHERE id IN ({placeholders}) AND phone IS NOT NULL AND phone != ''",
+            recipient_ids,
+        )
+    else:
+        rows = query_db(
+            "SELECT id FROM NotificationContacts "
+            "WHERE is_active = 1 AND phone IS NOT NULL AND phone != ''"
+        )
+
+    queued = len(rows or [])
+    if queued == 0:
+        return jsonify({'success': False, 'error': '발송 대상 수신자가 없습니다.'}), 400
+
+    threading.Thread(
+        target=send_manual_sms_task,
+        args=(message, recipient_ids if recipient_ids else None),
+    ).start()
+    return jsonify({'success': True, 'queued': queued})
 
 # --- 기존 API ---
 @app.route('/api/status', methods=['GET'])
@@ -147,6 +191,11 @@ def heartbeat():
         })
     except Exception as e:
         return jsonify({'alive': False, 'error': str(e)})
+
+@app.route('/api/health', methods=['GET'])
+def api_health():
+    return jsonify(get_health())
+
 
 @app.route('/api/events', methods=['POST'])
 def create_event():
