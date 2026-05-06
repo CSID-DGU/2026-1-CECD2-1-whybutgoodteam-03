@@ -26,6 +26,11 @@ CLEANUP_INTERVAL_SEC = 5 * 60
 DATABASE = 'gard-ear.db'
 DEVICE_ID = 'rasp_pi_main'
 
+# 화재 알림 쿨다운: 직전 알림 후 N초 이내면 이벤트는 기록하되 알림(SMS/이메일/텔레그램)은 스킵.
+FIRE_ALERT_COOLDOWN_SEC = 5 * 60
+_last_fire_alert_ts = 0.0
+_fire_alert_lock = threading.Lock()
+
 app = Flask(__name__, template_folder='.')
 CORS(app)
 app.config['DATABASE'] = DATABASE
@@ -223,6 +228,17 @@ def create_event():
     settings = query_db("SELECT location FROM SystemSettings WHERE id = 1", one=True)
     location = settings.get('location', '미설정') if settings else '미설정'
     execute_db("INSERT INTO Events (device_id, event_type, location) VALUES (?, 'fire_alarm_detected', ?)", [DEVICE_ID, location])
+
+    global _last_fire_alert_ts
+    now_ts = time.time()
+    with _fire_alert_lock:
+        elapsed = now_ts - _last_fire_alert_ts
+        if elapsed < FIRE_ALERT_COOLDOWN_SEC:
+            remaining = int(FIRE_ALERT_COOLDOWN_SEC - elapsed)
+            print(f"[알림 쿨다운] {remaining}초 남음 — 이벤트 기록만 하고 알림 스킵", flush=True)
+            return jsonify({'message': 'Alert recorded (notification suppressed by cooldown).',
+                            'cooldown_remaining_sec': remaining}), 201
+        _last_fire_alert_ts = now_ts
 
     threading.Thread(target=send_notification_task, args=(location, pred_label)).start()
     return jsonify({'message': 'Alert triggered.'}), 201
