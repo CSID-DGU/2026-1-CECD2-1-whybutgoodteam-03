@@ -156,9 +156,11 @@ def send_sms(recipient_name, recipient_phone, message_body, log_id, settings=Non
 
 
 # --- 메인 알림 작업 ---
-def send_notification_task(location):
-    print(f"[알림 작업 시작] 위치: {location}")
-    
+def send_notification_task(location, pred_label='fire_alarm'):
+    print(f"[알림 작업 시작] 위치: {location} | label: {pred_label}")
+
+    sms_enabled = (pred_label == 'fire_alarm')
+
     now = time.localtime()
     date_str = time.strftime('%Y-%m-%d', now)
     ampm = '오전' if now.tm_hour < 12 else '오후'
@@ -189,10 +191,12 @@ def send_notification_task(location):
         phone = contact.get('phone')
         email = contact.get('email')
 
-        # 1. SMS 발송 프로세스
-        if phone:
+        # 1. SMS 발송 프로세스 (emergency는 SMS 스킵, fire_alarm만 발송)
+        if phone and sms_enabled:
             log_id = log_notification_start(name, 'sms', message)
             send_sms(name, phone, message, log_id, settings=sender_settings)
+        elif phone and not sms_enabled:
+            print(f"[알림] {name} SMS 스킵 (emergency 등급)")
 
         # 2. 이메일 발송 프로세스
         if email:

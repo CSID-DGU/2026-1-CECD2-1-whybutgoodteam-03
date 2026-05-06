@@ -19,6 +19,10 @@ DETECTION_LOG = 'logs/detection_log.csv'
 RECORDINGS_DIR = os.path.abspath('records')
 RECORDING_WINDOW_SEC = 10  # 이벤트 타임스탬프 ±N초의 녹음본을 매칭
 
+# 보관 정책: 최근 RETENTION_HOURS 시간 wav + 화재 분류 wav 만 남기고 정리.
+RETENTION_HOURS = 2
+CLEANUP_INTERVAL_SEC = 5 * 60
+
 DATABASE = 'gard-ear.db'
 DEVICE_ID = 'rasp_pi_main'
 
@@ -212,12 +216,15 @@ def api_health():
 
 @app.route('/api/events', methods=['POST'])
 def create_event():
+    payload = request.get_json(silent=True) or {}
+    pred_label = payload.get('pred_label', 'fire_alarm')
+
     execute_db("UPDATE DeviceStatus SET status = 'alert' WHERE device_id = ?", [DEVICE_ID])
     settings = query_db("SELECT location FROM SystemSettings WHERE id = 1", one=True)
     location = settings.get('location', '미설정') if settings else '미설정'
     execute_db("INSERT INTO Events (device_id, event_type, location) VALUES (?, 'fire_alarm_detected', ?)", [DEVICE_ID, location])
-    
-    threading.Thread(target=send_notification_task, args=(location,)).start()
+
+    threading.Thread(target=send_notification_task, args=(location, pred_label)).start()
     return jsonify({'message': 'Alert triggered.'}), 201
 
 @app.route('/api/acknowledge', methods=['POST'])
@@ -324,6 +331,118 @@ def get_recording(filename):
     if '/' in filename or '\\' in filename or '..' in filename or not filename.lower().endswith('.wav'):
         abort(400)
     return send_from_directory(RECORDINGS_DIR, filename, mimetype='audio/wav', conditional=True)
+
+
+def _load_fire_filenames():
+    """detection_log.csv에서 is_fire == 1 인 행의 filename 집합."""
+    fire = set()
+    try:
+        with open(DETECTION_LOG, 'r', encoding='utf-8-sig', errors='replace') as f:
+            reader = csv.DictReader(f)
+            for r in reader:
+                if (r.get('is_fire') or '').strip() == '1':
+                    fname = (r.get('filename') or '').strip()
+                    if fname:
+                        fire.add(fname)
+    except FileNotFoundError:
+        pass
+    return fire
+
+
+def cleanup_recordings_once():
+    """RETENTION_HOURS 초과 wav 중 화재 분류 아닌 것 삭제. (deleted, kept) 반환."""
+    if not os.path.isdir(RECORDINGS_DIR):
+        return 0, 0
+    fire_set = _load_fire_filenames()
+    cutoff = time.time() - RETENTION_HOURS * 3600
+    deleted = 0
+    kept = 0
+    for fname in os.listdir(RECORDINGS_DIR):
+        if not fname.lower().endswith('.wav'):
+            continue
+        fpath = os.path.join(RECORDINGS_DIR, fname)
+        try:
+            mtime = os.path.getmtime(fpath)
+        except OSError:
+            continue
+        if mtime >= cutoff or fname in fire_set:
+            kept += 1
+            continue
+        try:
+            os.remove(fpath)
+            deleted += 1
+        except OSError:
+            pass
+    return deleted, kept
+
+
+def recordings_cleanup_loop():
+    while True:
+        try:
+            deleted, kept = cleanup_recordings_once()
+            if deleted or kept:
+                print(f"[녹음 정리] 삭제 {deleted}개 / 보관 {kept}개 "
+                      f"(최근 {RETENTION_HOURS}h + 화재)", flush=True)
+        except Exception as e:
+            print(f"[녹음 정리] 예외: {e}", flush=True)
+        time.sleep(CLEANUP_INTERVAL_SEC)
+
+
+@app.route('/api/recordings/retained', methods=['GET'])
+def get_retained_recordings():
+    """보관 중인 wav 목록 (최근 RETENTION_HOURS 시간 + 화재 분류).
+    detection_log.csv 와 실제 파일 존재를 매칭해서 반환.
+    """
+    try:
+        limit = int(request.args.get('limit', 200))
+    except (TypeError, ValueError):
+        limit = 200
+    limit = max(1, min(limit, 2000))
+    only_fire = (request.args.get('fire_only') or '').lower() in ('1', 'true', 'yes')
+
+    cutoff = datetime.now() - timedelta(hours=RETENTION_HOURS)
+    items_by_fname = {}
+    try:
+        with open(DETECTION_LOG, 'r', encoding='utf-8-sig', errors='replace') as f:
+            reader = csv.DictReader(f)
+            for r in reader:
+                fname = (r.get('filename') or '').strip()
+                if not fname:
+                    continue
+                ts_str = (r.get('timestamp') or '').strip()
+                try:
+                    ts = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
+                except ValueError:
+                    continue
+                is_fire = (r.get('is_fire') or '').strip() == '1'
+                in_window = ts >= cutoff
+                if not (is_fire or in_window):
+                    continue
+                if only_fire and not is_fire:
+                    continue
+                if not os.path.isfile(os.path.join(RECORDINGS_DIR, fname)):
+                    continue
+                items_by_fname[fname] = {
+                    'filename': fname,
+                    'timestamp': ts_str,
+                    'stage': r.get('stage'),
+                    'pred_label': r.get('pred_label') or None,
+                    'pred_prob': float(r['pred_prob']) if r.get('pred_prob') else None,
+                    'is_fire': is_fire,
+                    'in_window': in_window,
+                }
+    except FileNotFoundError:
+        pass
+
+    items = sorted(items_by_fname.values(), key=lambda x: x['timestamp'], reverse=True)
+    fire_count = sum(1 for x in items if x['is_fire'])
+    return jsonify({
+        'retention_hours': RETENTION_HOURS,
+        'total': len(items),
+        'fire_count': fire_count,
+        'limit': limit,
+        'recordings': items[:limit],
+    })
 
 @app.route('/api/logs', methods=['GET'])
 def get_logs():
@@ -498,6 +617,7 @@ if __name__ == '__main__':
         database.create_tables()
 
     threading.Thread(target=status_reporter_loop, daemon=True).start()
+    threading.Thread(target=recordings_cleanup_loop, daemon=True).start()
     telegram_notify.start_poll_thread()
 
     app.run(host='0.0.0.0', port=5000)

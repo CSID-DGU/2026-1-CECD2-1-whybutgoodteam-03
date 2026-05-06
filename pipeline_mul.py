@@ -20,6 +20,7 @@ import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix
+from scipy.signal import welch
 
 from prefilter import rule_prefilter
 from common_raw_audio import load_wav_fixed
@@ -33,9 +34,33 @@ OUT_CSV_PATH = "./result/pipe/rule_model.csv"   # 결과 CSV
 RULE_MIN_SCORE = 0.07                                    # rule 프리필터 기준
 POSITIVE_PREFIX = {"S1", "S2", "S3", "S8", "S10"}       # 양성 클래스 prefix (GT 기준)
 
-# 3-class 공통 매핑: 0=other, 1=emergency, 2=fire_alarm
+# 모델 직출력은 3-class: 0=other, 1=emergency, 2=fire_alarm
+# 사후 매핑으로 'outdoor'(초고주파 순음)을 추가해 4-class 표시 라벨로 확장
 CLASS_NAMES = ['other', 'emergency', 'fire_alarm']
 POSITIVE_INDICES = {1, 2}  # emergency, fire_alarm → 화재 양성
+
+# Outdoor 사후 룰 임계값 (8개 샘플로 검증, 두 그룹 사이 큰 마진 확인)
+OUTDOOR_PEAK_FREQ_MIN = 3500.0
+OUTDOOR_TONE_RATIO_MIN = 0.95
+OUTDOOR_FLATNESS_MAX = 0.005
+
+
+def is_outdoor_pure_tone(wav: np.ndarray, sr: int) -> bool:
+    """초고주파 단일 순음(가스경보/백업알람/전자 차임벨 등) 판정.
+    Why: 진짜 화재경보기는 메인 톤 + 배음이 함께 나와 단일 좁은 대역에 95%↑ 몰리지 않음.
+    """
+    f, Pxx = welch(wav.astype(np.float32), fs=sr, nperseg=2048)
+    peak_idx = int(np.argmax(Pxx))
+    peak_freq = float(f[peak_idx])
+    lo, hi = peak_freq / (2 ** (1 / 24)), peak_freq * (2 ** (1 / 24))
+    tone_ratio = float(Pxx[(f >= lo) & (f <= hi)].sum() / (Pxx.sum() + 1e-12))
+    Pxx_pos = Pxx[Pxx > 0]
+    flatness = float(np.exp(np.mean(np.log(Pxx_pos))) / np.mean(Pxx_pos))
+    return (
+        peak_freq > OUTDOOR_PEAK_FREQ_MIN
+        and tone_ratio > OUTDOOR_TONE_RATIO_MIN
+        and flatness < OUTDOOR_FLATNESS_MAX
+    )
 
 # ============================================================
 #  ★ 활성 모델 선택 ★
@@ -267,6 +292,11 @@ def infer_one_file(wav_path, target_sr, out_len, model_bundle, model_type):
     pred_label = CLASS_NAMES[pred_idx]
     is_positive = pred_idx in POSITIVE_INDICES
     pred_prefix = "FIRE" if is_positive else "OTHER"
+
+    # ── 사후 매핑: FIRE 분류된 것 중 초고주파 순음이면 outdoor로 재라벨(비화재) ──
+    if is_positive and is_outdoor_pure_tone(wav, target_sr):
+        pred_label = "outdoor"
+        pred_prefix = "OTHER"
 
     elapsed = time.perf_counter() - t0
     return {

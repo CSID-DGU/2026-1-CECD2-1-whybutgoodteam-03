@@ -62,10 +62,14 @@ def save_log_to_csv(result_dict, is_fire):
         pass
 
 
-def send_alert_to_server():
+def send_alert_to_server(pred_label="fire_alarm"):
     try:
-        requests.post(SERVER_URL, json={"event_type": "fire_alarm_detected"}, timeout=2)
-        print("🚨 [서버 전송 완료]", flush=True)
+        requests.post(
+            SERVER_URL,
+            json={"event_type": "fire_alarm_detected", "pred_label": pred_label},
+            timeout=2,
+        )
+        print(f"🚨 [서버 전송 완료] label={pred_label}", flush=True)
     except:
         print("❌ [서버 전송 실패]", flush=True)
 
@@ -221,8 +225,10 @@ def run_audio_session(infer_q, result_q, prediction_queue):
                     break
 
                 is_fire = 0
+                fire_label = None
                 if result["stage"] == "passed" and result["pred_prefix"] == "FIRE":
                     is_fire = 1
+                    fire_label = result["pred_label"]  # 'emergency' 또는 'fire_alarm'
                     print(f"⚠️  [화재 감지!] {result['pred_label']} ({result['pred_prob']:.2f}) | {result['elapsed']:.1f}s", flush=True)
                 elif result["stage"] == "rule_filtered":
                     print(f"💤  [조용함] rule={result['rule_score']:.3f} | {result['elapsed']:.2f}s", flush=True)
@@ -233,10 +239,14 @@ def run_audio_session(infer_q, result_q, prediction_queue):
 
                 save_log_to_csv(result, is_fire)
 
-                prediction_queue.append(is_fire)
-                if len(prediction_queue) == 3 and sum(prediction_queue) >= 2:
-                    print("\n🔥🔥🔥 [확정] 화재 경보 발송!!! 🔥🔥🔥", flush=True)
-                    send_alert_to_server()
+                prediction_queue.append((is_fire, fire_label))
+                fire_count = sum(1 for f, _ in prediction_queue if f)
+                if len(prediction_queue) == 3 and fire_count >= 2:
+                    fire_labels = [lbl for f, lbl in prediction_queue if f]
+                    # fire_alarm이 한 번이라도 있으면 fire_alarm, 모두 emergency면 emergency
+                    confirmed_label = "fire_alarm" if "fire_alarm" in fire_labels else "emergency"
+                    print(f"\n🔥🔥🔥 [확정] {confirmed_label} 경보 발송!!! 🔥🔥🔥", flush=True)
+                    send_alert_to_server(confirmed_label)
                     prediction_queue.clear()
                     time.sleep(3)
 
