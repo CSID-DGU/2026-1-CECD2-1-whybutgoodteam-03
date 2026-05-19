@@ -11,6 +11,7 @@ import pyaudio
 import wave
 import requests
 import collections
+import socket
 import numpy as np
 import csv
 from datetime import datetime
@@ -28,7 +29,7 @@ CHUNK = 1024
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RECORD_SECONDS = 4.0
-SLIDE_SECONDS = 2.0  # 슬라이딩 간격
+SLIDE_SECONDS = 4.0  # 슬라이딩 간격
 
 
 def init_system():
@@ -117,6 +118,83 @@ MIC_HEARTBEAT_TIMEOUT_SEC = 5.0
 
 
 # ============================================================
+#  실시간 라이브 오디오 (Unix socket broadcast)
+# ============================================================
+LIVE_SOCKET_PATH = "/tmp/gard_audio.sock"
+LIVE_BUFFER_CHUNKS = 80  # ~1.7s @ 48kHz, 1024-sample chunks
+
+_live_clients = []  # list of (conn, deque)
+_live_cv = threading.Condition()
+
+
+def _serve_live_client(conn, q):
+    try:
+        while True:
+            with _live_cv:
+                while not q:
+                    _live_cv.wait(timeout=2.0)
+                data = q.popleft()
+            try:
+                conn.sendall(data)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                return
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        with _live_cv:
+            for i, (c, _) in enumerate(_live_clients):
+                if c is conn:
+                    _live_clients.pop(i)
+                    break
+
+
+def _live_audio_server():
+    """Unix socket 서버: 새 청크가 들어오면 모든 구독자에게 broadcast."""
+    try:
+        os.unlink(LIVE_SOCKET_PATH)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        srv.bind(LIVE_SOCKET_PATH)
+    except OSError as e:
+        print(f"[live audio] bind 실패: {e}", flush=True)
+        return
+    try:
+        os.chmod(LIVE_SOCKET_PATH, 0o666)
+    except OSError:
+        pass
+    srv.listen(8)
+    print(f"[live audio] socket 대기: {LIVE_SOCKET_PATH}", flush=True)
+    while True:
+        try:
+            conn, _ = srv.accept()
+        except OSError:
+            time.sleep(0.5)
+            continue
+        q = collections.deque(maxlen=LIVE_BUFFER_CHUNKS)
+        with _live_cv:
+            _live_clients.append((conn, q))
+        threading.Thread(target=_serve_live_client,
+                         args=(conn, q), daemon=True).start()
+
+
+def broadcast_live_chunk(data):
+    with _live_cv:
+        if not _live_clients:
+            return
+        for _, q in _live_clients:
+            if len(q) >= q.maxlen:
+                q.popleft()
+            q.append(data)
+        _live_cv.notify_all()
+
+
+# ============================================================
 #  연속 녹음 스레드 (링버퍼에 계속 쌓기)
 # ============================================================
 def continuous_recording_thread(stream, ring_buffer, ring_lock, stop_event, mic_error_event, heartbeat):
@@ -129,6 +207,7 @@ def continuous_recording_thread(stream, ring_buffer, ring_lock, stop_event, mic_
             data = stream.read(CHUNK, exception_on_overflow=False)
             with ring_lock:
                 ring_buffer.append(data)
+            broadcast_live_chunk(data)
             heartbeat[0] = time.time()
         except (IOError, OSError) as e:
             print(f"❌ [녹음 스레드] read 실패: {e}", flush=True)
@@ -167,7 +246,7 @@ def run_audio_session(infer_q, result_q, prediction_queue):
         stream = p.open(format=FORMAT, channels=CHANNELS, rate=MIC_RATE,
                         input=True, frames_per_buffer=CHUNK, start=True)
         print(f"🎤 마이크 연결 완료: {MIC_RATE}Hz", flush=True)
-        print(f"🎧 2초 슬라이딩 윈도우 모드 (녹음={RECORD_SECONDS}s, 간격={SLIDE_SECONDS}s)\n", flush=True)
+        print(f"🎧 4초 슬라이딩 윈도우 모드 (녹음={RECORD_SECONDS}s, 간격={SLIDE_SECONDS}s)\n", flush=True)
 
         ring_buffer = collections.deque(maxlen=chunks_for_4sec)
         ring_lock = threading.Lock()
@@ -250,7 +329,7 @@ def run_audio_session(infer_q, result_q, prediction_queue):
                     prediction_queue.clear()
                     time.sleep(3)
 
-            # ── 5. 2초 대기 (슬라이딩 간격) ──
+            # ── 5. 4초 대기 (슬라이딩 간격) ──
             time.sleep(SLIDE_SECONDS)
     finally:
         stop_event.set()
@@ -275,8 +354,11 @@ def run_audio_session(infer_q, result_q, prediction_queue):
 
 
 def main():
-    print("\n=== 🔥 가드이어 감지기 (2초 슬라이딩 윈도우) 시작 ===", flush=True)
+    print("\n=== 🔥 가드이어 감지기 (4초 슬라이딩 윈도우) 시작 ===", flush=True)
     init_system()
+
+    # 라이브 오디오 broadcast 서버 (Unix socket)
+    threading.Thread(target=_live_audio_server, daemon=True).start()
 
     # 추론 프로세스 (한 번만 시작 — 마이크 재연결 시에도 유지)
     infer_q = multiprocessing.Queue(maxsize=4)

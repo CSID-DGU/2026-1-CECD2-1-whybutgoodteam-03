@@ -7,7 +7,7 @@ import threading
 import time
 import csv
 from datetime import datetime, timedelta
-from flask import Flask, jsonify, request, render_template, g, send_from_directory, abort
+from flask import Flask, jsonify, request, render_template, g, send_from_directory, abort, Response
 from flask_cors import CORS
 from notifications import send_notification_task, send_manual_sms_task
 from health import get_health
@@ -22,6 +22,15 @@ RECORDING_WINDOW_SEC = 10  # 이벤트 타임스탬프 ±N초의 녹음본을 �
 # 보관 정책: 최근 RETENTION_HOURS 시간 wav + 화재 분류 wav 만 남기고 정리.
 RETENTION_HOURS = 2
 CLEANUP_INTERVAL_SEC = 5 * 60
+# 업로드 마커가 없어도 이 시간이 지나면 강제 삭제 (네트워크 장기 다운 백스톱)
+UPLOAD_BACKSTOP_HOURS = 6
+UPLOADED_DIR = os.path.join(RECORDINGS_DIR, ".uploaded")
+
+# 실시간 라이브 오디오 (detector가 publish하는 Unix socket)
+LIVE_AUDIO_SOCKET = "/tmp/gard_audio.sock"
+LIVE_SAMPLE_RATE = 48000
+LIVE_CHANNELS = 1
+LIVE_BITS = 16
 
 DATABASE = 'gard-ear.db'
 DEVICE_ID = 'rasp_pi_main'
@@ -62,6 +71,61 @@ def execute_db(query, args=()):
     except sqlite3.Error as e:
         print(f"DB Error: {e}")
         return False
+
+import struct as _struct
+
+
+def _make_streaming_wav_header(sample_rate=LIVE_SAMPLE_RATE,
+                                channels=LIVE_CHANNELS,
+                                bits=LIVE_BITS):
+    """무한 스트리밍용 WAV 헤더. ChunkSize / Subchunk2Size 를 최대값으로 채워
+    브라우저가 끝없이 재생하도록 한다."""
+    byte_rate = sample_rate * channels * bits // 8
+    block_align = channels * bits // 8
+    data_size = 0xFFFFFFFF - 36
+    riff_size = 0xFFFFFFFF
+    return (
+        b'RIFF' + _struct.pack('<I', riff_size) + b'WAVE'
+        + b'fmt ' + _struct.pack('<I', 16)
+        + _struct.pack('<HHIIHH', 1, channels, sample_rate,
+                        byte_rate, block_align, bits)
+        + b'data' + _struct.pack('<I', data_size)
+    )
+
+
+@app.route('/api/live_audio')
+def live_audio_stream():
+    """detector Unix socket → 무한 WAV chunked HTTP 스트림."""
+    def generate():
+        yield _make_streaming_wav_header()
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(5)
+            sock.connect(LIVE_AUDIO_SOCKET)
+        except (FileNotFoundError, ConnectionRefusedError, OSError) as e:
+            print(f'[live_audio] detector socket 연결 실패: {e}', flush=True)
+            return
+        try:
+            sock.settimeout(30)
+            while True:
+                data = sock.recv(8192)
+                if not data:
+                    break
+                yield data
+        except (OSError, socket.timeout):
+            pass
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+    response = Response(generate(), mimetype='audio/wav')
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['X-Accel-Buffering'] = 'no'
+    return response
+
 
 @app.route('/')
 def index():
@@ -253,6 +317,62 @@ def get_events():
     return jsonify(query_db("SELECT * FROM Events ORDER BY timestamp DESC"))
 
 
+def _existing_recordings():
+    try:
+        return set(os.listdir(RECORDINGS_DIR))
+    except OSError:
+        return set()
+
+
+def _read_log_tail_lines(max_bytes):
+    """detection_log.csv 끝에서 max_bytes 만큼만 읽어 라인 리스트 반환.
+    파일이 더 작으면 전체. 첫 부분 잘린 라인은 버림.
+    """
+    try:
+        size = os.path.getsize(DETECTION_LOG)
+    except OSError:
+        return []
+    try:
+        with open(DETECTION_LOG, 'rb') as f:
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+                f.readline()  # 잘린 라인 버림
+                data = f.read()
+            else:
+                data = f.read()
+    except OSError:
+        return []
+    text = data.decode('utf-8', errors='replace').lstrip('﻿')
+    return text.splitlines()
+
+
+def _parse_detection_row(row_csv):
+    """CSV row → dict. 형식 불일치 시 None."""
+    if len(row_csv) < 7:
+        return None
+    ts_str = row_csv[0].strip()
+    fname = row_csv[1].strip()
+    if not ts_str or not fname:
+        return None
+    rule_score = None
+    if len(row_csv) > 3 and row_csv[3].strip():
+        try: rule_score = float(row_csv[3])
+        except ValueError: pass
+    pred_prob = None
+    if len(row_csv) > 5 and row_csv[5].strip():
+        try: pred_prob = float(row_csv[5])
+        except ValueError: pass
+    return {
+        'filename': fname,
+        'timestamp': ts_str,
+        'stage': row_csv[2] if len(row_csv) > 2 else None,
+        'rule_score': rule_score,
+        'pred_label': (row_csv[4] or None) if len(row_csv) > 4 else None,
+        'pred_prob': pred_prob,
+        'is_fire': row_csv[6].strip() == '1',
+    }
+
+
 @app.route('/api/events/<int:event_id>/recordings', methods=['GET'])
 def get_event_recordings(event_id):
     """이벤트 시각 ±N초 사이의 detection_log 행 + wav 존재 여부를 반환."""
@@ -264,41 +384,31 @@ def get_event_recordings(event_id):
     except (ValueError, TypeError):
         return jsonify({'error': 'invalid event timestamp'}), 500
 
-    lo = ev_ts - timedelta(seconds=RECORDING_WINDOW_SEC)
-    hi = ev_ts + timedelta(seconds=RECORDING_WINDOW_SEC)
+    lo_str = (ev_ts - timedelta(seconds=RECORDING_WINDOW_SEC)).strftime('%Y-%m-%d %H:%M:%S')
+    hi_str = (ev_ts + timedelta(seconds=RECORDING_WINDOW_SEC)).strftime('%Y-%m-%d %H:%M:%S')
 
+    existing = _existing_recordings()
     items = []
-    try:
-        with open(DETECTION_LOG, 'r', encoding='utf-8-sig', errors='replace') as f:
-            reader = csv.DictReader(f)
-            for r in reader:
-                ts_str = r.get('timestamp', '').strip()
-                if not ts_str:
-                    continue
-                try:
-                    ts = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
-                except ValueError:
-                    continue
-                if not (lo <= ts <= hi):
-                    continue
-                fname = (r.get('filename') or '').strip()
-                if not fname:
-                    continue
-                exists = os.path.isfile(os.path.join(RECORDINGS_DIR, fname))
-                items.append({
-                    'filename': fname,
-                    'timestamp': ts_str,
-                    'stage': r.get('stage'),
-                    'rule_score': float(r['rule_score']) if r.get('rule_score') else None,
-                    'pred_label': r.get('pred_label') or None,
-                    'pred_prob': float(r['pred_prob']) if r.get('pred_prob') else None,
-                    'is_fire': r.get('is_fire') == '1',
-                    'exists': exists,
-                })
-    except FileNotFoundError:
-        return jsonify({'event_timestamp': row['timestamp'], 'recordings': []})
+    # 보수적 5MB (~50k 행) — 최근 이벤트 대부분 커버. 더 옛날 이벤트면 빈 결과.
+    lines = _read_log_tail_lines(5_000_000)
+    for row_csv in csv.reader(lines):
+        if len(row_csv) < 7:
+            continue
+        ts_str = row_csv[0].strip()
+        if not (lo_str <= ts_str <= hi_str):
+            continue
+        item = _parse_detection_row(row_csv)
+        if not item:
+            continue
+        item['exists'] = item['filename'] in existing
+        items.append(item)
 
     return jsonify({'event_timestamp': row['timestamp'], 'recordings': items})
+
+
+_RECENT_CACHE = {}  # seconds -> {'mtime':..., 'ts':..., 'data':...}
+_RECENT_CACHE_TTL = 1.5
+_RECENT_CACHE_LOCK = threading.Lock()
 
 
 @app.route('/api/detections/recent', methods=['GET'])
@@ -309,35 +419,37 @@ def get_recent_detections():
     except (TypeError, ValueError):
         seconds = 60
     seconds = max(1, min(seconds, 600))
-    cutoff = datetime.now() - timedelta(seconds=seconds)
 
-    items = []
     try:
-        with open(DETECTION_LOG, 'r', encoding='utf-8-sig', errors='replace') as f:
-            reader = csv.DictReader(f)
-            for r in reader:
-                ts_str = (r.get('timestamp') or '').strip()
-                try:
-                    ts = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
-                except ValueError:
-                    continue
-                if ts < cutoff:
-                    continue
-                fname = (r.get('filename') or '').strip()
-                items.append({
-                    'filename': fname,
-                    'timestamp': ts_str,
-                    'stage': r.get('stage'),
-                    'rule_score': float(r['rule_score']) if r.get('rule_score') else None,
-                    'pred_label': r.get('pred_label') or None,
-                    'pred_prob': float(r['pred_prob']) if r.get('pred_prob') else None,
-                    'is_fire': r.get('is_fire') == '1',
-                    'exists': bool(fname) and os.path.isfile(os.path.join(RECORDINGS_DIR, fname)),
-                })
-    except FileNotFoundError:
-        pass
+        log_mtime = os.path.getmtime(DETECTION_LOG)
+    except OSError:
+        log_mtime = 0
+    now = time.time()
+    with _RECENT_CACHE_LOCK:
+        c = _RECENT_CACHE.get(seconds)
+        if c and c['mtime'] == log_mtime and (now - c['ts']) < _RECENT_CACHE_TTL:
+            return jsonify({'seconds': seconds, 'recordings': c['data']})
+
+    cutoff_str = (datetime.now() - timedelta(seconds=seconds)).strftime('%Y-%m-%d %H:%M:%S')
+    existing = _existing_recordings()
+    items = []
+    # 600초 max → 2MB(약 20k행)면 여유.
+    lines = _read_log_tail_lines(2_000_000)
+    for row_csv in csv.reader(lines):
+        if len(row_csv) < 7:
+            continue
+        ts_str = row_csv[0].strip()
+        if ts_str < cutoff_str:
+            continue
+        item = _parse_detection_row(row_csv)
+        if not item:
+            continue
+        item['exists'] = item['filename'] in existing
+        items.append(item)
 
     items.sort(key=lambda x: x['timestamp'], reverse=True)
+    with _RECENT_CACHE_LOCK:
+        _RECENT_CACHE[seconds] = {'mtime': log_mtime, 'ts': now, 'data': items}
     return jsonify({'seconds': seconds, 'recordings': items})
 
 
@@ -366,11 +478,18 @@ def _load_fire_filenames():
 
 
 def cleanup_recordings_once():
-    """RETENTION_HOURS 초과 wav 중 화재 분류 아닌 것 삭제. (deleted, kept) 반환."""
+    """RETENTION_HOURS 초과 wav 중 화재 분류 아닌 것 삭제. (deleted, kept) 반환.
+    업로드 마커가 없으면 UPLOAD_BACKSTOP_HOURS 까지 보관 (gdrive 업로드 race 보호)."""
     if not os.path.isdir(RECORDINGS_DIR):
         return 0, 0
+    try:
+        os.makedirs(UPLOADED_DIR, exist_ok=True)
+    except OSError:
+        pass
     fire_set = _load_fire_filenames()
-    cutoff = time.time() - RETENTION_HOURS * 3600
+    now = time.time()
+    cutoff = now - RETENTION_HOURS * 3600
+    backstop_cutoff = now - UPLOAD_BACKSTOP_HOURS * 3600
     deleted = 0
     kept = 0
     for fname in os.listdir(RECORDINGS_DIR):
@@ -384,9 +503,17 @@ def cleanup_recordings_once():
         if mtime >= cutoff or fname in fire_set:
             kept += 1
             continue
+        marker = os.path.join(UPLOADED_DIR, fname)
+        if not os.path.exists(marker) and mtime >= backstop_cutoff:
+            kept += 1
+            continue
         try:
             os.remove(fpath)
             deleted += 1
+            try:
+                os.remove(marker)
+            except OSError:
+                pass
         except OSError:
             pass
     return deleted, kept
@@ -404,6 +531,62 @@ def recordings_cleanup_loop():
         time.sleep(CLEANUP_INTERVAL_SEC)
 
 
+_RETAINED_CACHE = {'key': None, 'ts': 0.0, 'data': None}
+_RETAINED_CACHE_TTL = 3.0
+_RETAINED_CACHE_LOCK = threading.Lock()
+
+
+def _build_retained_index():
+    """전체 retained 항목을 한 번만 만들어 반환. (only_fire 필터는 호출측에서)"""
+    cutoff = datetime.now() - timedelta(hours=RETENTION_HOURS)
+    cutoff_str = cutoff.strftime('%Y-%m-%d %H:%M:%S')
+
+    try:
+        existing = set(os.listdir(RECORDINGS_DIR))
+    except OSError:
+        existing = set()
+
+    items_by_fname = {}
+    try:
+        with open(DETECTION_LOG, 'r', encoding='utf-8-sig', errors='replace') as f:
+            reader = csv.reader(f)
+            try:
+                next(reader)  # skip header
+            except StopIteration:
+                return []
+            for row in reader:
+                if len(row) < 7:
+                    continue
+                ts_str = row[0].strip()
+                fname = row[1].strip()
+                if not fname or fname not in existing:
+                    continue
+                is_fire = row[6].strip() == '1'
+                in_window = ts_str >= cutoff_str  # ISO-like format → 문자열 비교 OK
+                if not (is_fire or in_window):
+                    continue
+                pred_prob = None
+                if len(row) > 5 and row[5].strip():
+                    try:
+                        pred_prob = float(row[5])
+                    except ValueError:
+                        pred_prob = None
+                items_by_fname[fname] = {
+                    'filename': fname,
+                    'timestamp': ts_str,
+                    'stage': row[2] if len(row) > 2 else None,
+                    'pred_label': (row[4] or None) if len(row) > 4 else None,
+                    'pred_prob': pred_prob,
+                    'is_fire': is_fire,
+                    'in_window': in_window,
+                }
+    except FileNotFoundError:
+        return []
+
+    items = sorted(items_by_fname.values(), key=lambda x: x['timestamp'], reverse=True)
+    return items
+
+
 @app.route('/api/recordings/retained', methods=['GET'])
 def get_retained_recordings():
     """보관 중인 wav 목록 (최근 RETENTION_HOURS 시간 + 화재 분류).
@@ -413,51 +596,39 @@ def get_retained_recordings():
         limit = int(request.args.get('limit', 200))
     except (TypeError, ValueError):
         limit = 200
-    limit = max(1, min(limit, 2000))
+    limit = max(1, min(limit, 10000))
     only_fire = (request.args.get('fire_only') or '').lower() in ('1', 'true', 'yes')
 
-    cutoff = datetime.now() - timedelta(hours=RETENTION_HOURS)
-    items_by_fname = {}
     try:
-        with open(DETECTION_LOG, 'r', encoding='utf-8-sig', errors='replace') as f:
-            reader = csv.DictReader(f)
-            for r in reader:
-                fname = (r.get('filename') or '').strip()
-                if not fname:
-                    continue
-                ts_str = (r.get('timestamp') or '').strip()
-                try:
-                    ts = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
-                except ValueError:
-                    continue
-                is_fire = (r.get('is_fire') or '').strip() == '1'
-                in_window = ts >= cutoff
-                if not (is_fire or in_window):
-                    continue
-                if only_fire and not is_fire:
-                    continue
-                if not os.path.isfile(os.path.join(RECORDINGS_DIR, fname)):
-                    continue
-                items_by_fname[fname] = {
-                    'filename': fname,
-                    'timestamp': ts_str,
-                    'stage': r.get('stage'),
-                    'pred_label': r.get('pred_label') or None,
-                    'pred_prob': float(r['pred_prob']) if r.get('pred_prob') else None,
-                    'is_fire': is_fire,
-                    'in_window': in_window,
-                }
-    except FileNotFoundError:
-        pass
+        log_mtime = os.path.getmtime(DETECTION_LOG)
+    except OSError:
+        log_mtime = 0
+    cache_key = log_mtime
 
-    items = sorted(items_by_fname.values(), key=lambda x: x['timestamp'], reverse=True)
+    now = time.time()
+    with _RETAINED_CACHE_LOCK:
+        cached = _RETAINED_CACHE['data']
+        if (cached is not None
+                and _RETAINED_CACHE['key'] == cache_key
+                and (now - _RETAINED_CACHE['ts']) < _RETAINED_CACHE_TTL):
+            items = cached
+        else:
+            items = _build_retained_index()
+            _RETAINED_CACHE['data'] = items
+            _RETAINED_CACHE['key'] = cache_key
+            _RETAINED_CACHE['ts'] = now
+
+    if only_fire:
+        filtered = [x for x in items if x['is_fire']]
+    else:
+        filtered = items
     fire_count = sum(1 for x in items if x['is_fire'])
     return jsonify({
         'retention_hours': RETENTION_HOURS,
-        'total': len(items),
+        'total': len(filtered),
         'fire_count': fire_count,
         'limit': limit,
-        'recordings': items[:limit],
+        'recordings': filtered[:limit],
     })
 
 @app.route('/api/logs', methods=['GET'])

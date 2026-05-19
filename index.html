@@ -173,7 +173,7 @@
                             <span id="hb-dot" class="pulse-dot"></span>
                             <div>
                                 <div id="hb-status-text" class="text-lg font-bold text-gray-700">감지기 상태 확인 중...</div>
-                                <div id="hb-cycle-text" class="text-sm text-gray-500">2초 주기 추론 사이클</div>
+                                <div id="hb-cycle-text" class="text-sm text-gray-500">4초 주기 추론 사이클</div>
                             </div>
                             <div class="ml-auto text-right">
                                 <div class="text-xs text-gray-400">마지막 추론</div>
@@ -247,6 +247,24 @@
                         </div>
                     </div>
                 </section>
+
+                <section class="mt-8">
+                    <h2 class="text-xl sm:text-2xl font-semibold mb-4 text-gray-800">실시간 음성 모니터</h2>
+                    <div class="bg-white p-4 sm:p-6 rounded-lg border shadow-sm">
+                        <div class="flex flex-wrap items-center gap-4">
+                            <button id="live-toggle"
+                                class="px-4 py-2 rounded-lg bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold transition">
+                                🔇 음소거 (클릭하여 듣기)
+                            </button>
+                            <span id="live-status" class="text-sm text-gray-500">기본은 음소거 상태입니다.</span>
+                            <audio id="live-audio" preload="none" class="hidden"></audio>
+                        </div>
+                        <p class="text-xs text-gray-400 mt-3">
+                            마이크 입력을 실시간으로 들을 수 있습니다. 화면을 닫거나 다시 음소거하면 즉시 스트림이 끊깁니다.
+                        </p>
+                    </div>
+                </section>
+
 
                 <section class="mt-8">
                     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
@@ -1161,7 +1179,7 @@
             const toggle = document.getElementById('recent-rec-fire-toggle');
             if (!list) return;
             const fireOnly = toggle && toggle.dataset.active === '1';
-            const url = `/api/recordings/retained?limit=200${fireOnly ? '&fire_only=1' : ''}`;
+            const url = `/api/recordings/retained?limit=5000${fireOnly ? '&fire_only=1' : ''}`;
             try {
                 const r = await fetch(url, { cache: 'no-store' });
                 if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -1252,5 +1270,67 @@
         });
 
     </script>
+
+<script>
+(function() {
+    const audio = document.getElementById('live-audio');
+    const btn = document.getElementById('live-toggle');
+    const status = document.getElementById('live-status');
+    if (!audio || !btn) return;
+    let active = false;
+
+    function start() {
+        // 캐시 회피용 timestamp + 새 연결로 시작 → 지연 최소화
+        audio.src = '/api/live_audio?_t=' + Date.now();
+        audio.muted = false;
+        const p = audio.play();
+        if (p && typeof p.catch === 'function') {
+            p.catch(err => {
+                console.warn('live audio play 실패', err);
+                status.textContent = '재생 실패: ' + err.message;
+            });
+        }
+    }
+    function stop() {
+        try { audio.pause(); } catch(e) {}
+        try { audio.removeAttribute('src'); audio.load(); } catch(e) {}
+    }
+
+    btn.addEventListener('click', () => {
+        if (!active) {
+            start();
+            active = true;
+            btn.textContent = '🔊 듣는 중 (클릭하여 음소거)';
+            btn.classList.remove('bg-gray-200', 'hover:bg-gray-300', 'text-gray-800');
+            btn.classList.add('bg-blue-600', 'hover:bg-blue-700', 'text-white');
+            status.textContent = '실시간 스트리밍 중...';
+        } else {
+            stop();
+            active = false;
+            btn.textContent = '🔇 음소거 (클릭하여 듣기)';
+            btn.classList.add('bg-gray-200', 'hover:bg-gray-300', 'text-gray-800');
+            btn.classList.remove('bg-blue-600', 'hover:bg-blue-700', 'text-white');
+            status.textContent = '음소거됨';
+        }
+    });
+
+    audio.addEventListener('error', () => {
+        status.textContent = '스트림 에러 — 다시 클릭하면 재연결';
+    });
+
+    window.addEventListener('beforeunload', () => { stop(); });
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden && active) {
+            // 탭 숨겨지면 끊어서 Pi 부하 절감
+            stop();
+            active = false;
+            btn.textContent = '🔇 음소거 (클릭하여 듣기)';
+            btn.classList.add('bg-gray-200', 'hover:bg-gray-300', 'text-gray-800');
+            btn.classList.remove('bg-blue-600', 'hover:bg-blue-700', 'text-white');
+            status.textContent = '탭이 숨겨져 자동 음소거됨';
+        }
+    });
+})();
+</script>
 </body>
 </html>
